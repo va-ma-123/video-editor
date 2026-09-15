@@ -1,0 +1,5 @@
+backend/storage/*/*
+
+backend/app/__pycache__
+
+EDL_NOTES.md
