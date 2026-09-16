@@ -6,6 +6,24 @@
 // This file builds a displayable nested tree from that flat representation,
 // and implements the mutations (group/ungroup) that keep it consistent.
 
+import { defaultGroupOperations } from "./edl";
+
+export function descendantGroupIds(groups, groupId) {
+  const result = [];
+  Object.values(groups).forEach((g) => {
+    if (g.id === groupId) return;
+    let current = g.parent_group_id;
+    while (current) {
+      if (current === groupId) {
+        result.push(g.id);
+        return;
+      }
+      current = groups[current]?.parent_group_id || null;
+    }
+  });
+  return result;
+}
+
 export function newGroupId() {
   return "group_" + Math.random().toString(16).slice(2, 12);
 }
@@ -53,7 +71,7 @@ export function buildTimelineTree(clips, groups) {
 
     // Close any open groups beyond the shared prefix, recording their end index.
     while (stackIds.length > common) {
-      const closingId = stackIds.pop();
+      stackIds.pop();
       const node = stack.pop();
       node.endIndex = flatIndex - 1;
     }
@@ -131,7 +149,9 @@ export function canGroupRange(clips, groups, startIndex, endIndex) {
  */
 export function groupRange(clips, groups, startIndex, endIndex, name) {
   const groupId = newGroupId();
-  const newGroups = { ...groups, [groupId]: { id: groupId, name, collapsed: false, parent_group_id: null } };
+  const newGroups = { 
+    ...groups, 
+    [groupId]: { id: groupId, name, collapsed: false, parent_group_id: null, operations: defaultGroupOperations() } };
   const newClips = clips.map((clip, i) => {
     if (i < startIndex || i > endIndex) return clip;
     // Only reparent clips that are currently at the top level (ungrouped) --

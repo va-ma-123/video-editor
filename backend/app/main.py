@@ -11,7 +11,8 @@ from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, R
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, FileResponse
 
-from . import storage, ffmpeg_utils
+from . import storage, ffmpeg_utils, metronome
+from .groups_util import group_ancestor_chain, clips_in_group
 from .models import Project, SourceInfo, Clip, ExportJob, new_id
 
 print(">>> main.py loaded, marker: TEST12345 <<<")
@@ -272,11 +273,10 @@ def upload_audio_asset(file: UploadFile = File(...)):
     return {"id": asset_id, "path": str(dest), "filename": file.filename}
 
 
-def _resolve_audio_asset_path(asset_id: str) -> str:
-    matches = list(storage.AUDIO_ASSETS_DIR.glob(f"{asset_id}.*"))
-    if not matches:
-        raise HTTPException(404, f"Audio asset {asset_id} not found")
-    return str(matches[0])
+# NOTE: audio-asset path lookup for rendering now lives in metronome.py
+# (used inside resolve_clip_audio), since it needs the same lookup for both
+# a genuine "replaced" asset and a metronome's optional custom click sound.
+
 
 
 # ---------------------------------------------------------------------------
@@ -289,14 +289,29 @@ def _ensure_clip_rendered(project: Project, clip: Clip, quality: str) -> Path:
     if source is None or source.proxy_status != "ready":
         raise HTTPException(400, f"Source {clip.source_id} proxy not ready")
 
-    cache_key = ffmpeg_utils.clip_cache_key(source, clip, quality=quality)
+    try:
+        resolved_audio = metronome.resolve_clip_audio(project, clip)
+    except metronome.AudioAssetNotFound as e:
+        raise HTTPException(400, str(e))
+
+    cache_key = ffmpeg_utils.clip_cache_key(source, clip, quality=quality, resolved_audio=resolved_audio.fingerprint)
     prefix = "final_" if quality == "final" else ""
     cache_path = storage.CACHE_DIR / f"{prefix}{cache_key}.mp4"
     if not cache_path.exists():
-        audio_asset_path = None
-        if clip.operations.audio.mode == "replaced" and clip.operations.audio.replacement_asset_id:
-            audio_asset_path = _resolve_audio_asset_path(clip.operations.audio.replacement_asset_id)
-        ffmpeg_utils.render_clip(source, clip, str(cache_path), quality=quality, audio_asset_path=audio_asset_path)
+        # ffmpeg_utils/render_clip only ever see "original" / "muted" /
+        # "replaced" -- "inherit" and "metronome" are fully resolved above,
+        # with a metronome landing here as a synthesized WAV played back
+        # through the exact same "replaced" path a user-uploaded replacement
+        # audio file already uses.
+        render_clip_input = clip.model_copy(deep=True)
+        render_clip_input.operations.audio.mode = resolved_audio.mode
+        render_clip_input.operations.audio.volume = resolved_audio.volume
+        render_clip_input.operations.audio.replacement_start_sec = resolved_audio.replacement_start_sec
+        ffmpeg_utils.render_clip(
+            source, render_clip_input, str(cache_path), quality=quality,
+            audio_asset_path=resolved_audio.asset_path,
+            sync_audio_to_speed=resolved_audio.sync_to_speed,
+        )
     return cache_path
 
 
@@ -345,26 +360,8 @@ def render_clip_preview(project_id: str, clip_id: str):
     return {"url": f"/media/cache/{cache_path.name}", "cache_bust": cache_path.stat().st_mtime, "clip_boundaries": boundaries}
 
 
-def _group_ancestor_chain(group_id: Optional[str], groups: dict) -> list[str]:
-    """Outermost-first chain of ancestor group ids for a given group id."""
-    chain = []
-    current = group_id
-    while current and current in groups:
-        chain.insert(0, current)
-        current = groups[current].parent_group_id
-    return chain
-
-
 def _clips_in_group(project: Project, group_id: str) -> list[Clip]:
-    """All clips belonging to a group, directly or via a nested subgroup,
-    in their existing timeline order. Mirrors the same ancestor-chain logic
-    the frontend uses to build the group tree (see frontend/src/groups.js)."""
-    result = []
-    for clip in project.clips:
-        chain = _group_ancestor_chain(clip.group_id, project.groups)
-        if group_id in chain:
-            result.append(clip)
-    return result
+    return clips_in_group(project, group_id)
 
 
 @app.post("/api/projects/{project_id}/groups/{group_id}/render-preview")

@@ -166,7 +166,7 @@ export default function Timeline({ project, selectedClipId, selectedGroupId, pla
     if (ops.transform.rotate) badges.push(`rot${ops.transform.rotate}`);
     if (ops.transform.crop) badges.push("crop");
     if (ops.transform.flip) badges.push(ops.transform.flip);
-    if (ops.audio.mode !== "original") badges.push(ops.audio.mode);
+    if (ops.audio.mode !== "inherit") badges.push(ops.audio.mode);
     if (ops.fade.fade_in.duration_sec > 0 || ops.fade.fade_out.duration_sec > 0) badges.push("fade");
     return badges;
   };
@@ -224,6 +224,7 @@ export default function Timeline({ project, selectedClipId, selectedGroupId, pla
     const isDragOver = dragOverFlatIndex === node.startIndex && !isDragging;
     const inRange = selectedRange && node.startIndex >= selectedRange[0] && node.endIndex <= selectedRange[1];
     const clipCount = node.endIndex - node.startIndex + 1;
+    const groupAudioMode = group.operations?.audio?.mode || "inherit";
 
     return (
       <div key={group.id}>
@@ -247,6 +248,13 @@ export default function Timeline({ project, selectedClipId, selectedGroupId, pla
           <div className="group-info">
             <span className="group-name">{containsPlaying ? "▶" : "📁"} {group.name}</span>
             <span className="dim mono"> ({clipCount} clip{clipCount === 1 ? "" : "s"})</span>
+            {groupAudioMode !== "inherit" && (
+              <span className="clip-badges">
+                <span className="badge">
+                  {groupAudioMode}
+                </span>
+              </span>
+            )}
           </div>
           <div className="clip-actions" onClick={(e) => e.stopPropagation()}>
             <button onClick={() => handleRename(group.id)} title="Rename group">✎</button>

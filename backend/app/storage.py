@@ -65,13 +65,14 @@ def clean_cache(max_age_hours: float) -> dict:
     cutoff = time.time() - (max_age_hours * 3600)
     deleted_count = 0
     bytes_freed = 0
-    for f in CACHE_DIR.glob("*.mp4"):
-        try:
-            stat = f.stat()
-            if stat.st_mtime < cutoff:
-                bytes_freed += stat.st_size
-                f.unlink()
-                deleted_count += 1
-        except FileNotFoundError:
-            continue  # already removed by something else; not an error
+    for pattern in ("*.mp4", "metronome_*.wav"):
+        for f in CACHE_DIR.glob(pattern):
+            try:
+                stat = f.stat()
+                if stat.st_mtime < cutoff:
+                    bytes_freed += stat.st_size
+                    f.unlink()
+                    deleted_count += 1
+            except FileNotFoundError:
+                continue  # already removed by something else; not an error
     return {"deleted_count": deleted_count, "bytes_freed": bytes_freed, "max_age_hours": max_age_hours}

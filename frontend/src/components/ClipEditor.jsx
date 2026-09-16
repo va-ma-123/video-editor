@@ -1,8 +1,10 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
+import { defaultMetronome, defaultRamp } from "../edl";
 
 export default function ClipEditor({ clip, source, onChange }) {
   const [audioUploadStatus, setAudioUploadStatus] = useState("");
+  const [soundUploadStatus, setSoundUploadStatus] = useState("");
   const [startDraft, setStartDraft] = useState("");
   const [endDraft, setEndDraft] = useState("");
 
@@ -26,6 +28,19 @@ export default function ClipEditor({ clip, source, onChange }) {
   const updateTransform = (patch) => update({ transform: { ...ops.transform, ...patch } });
   const updateAudio = (patch) => update({ audio: { ...ops.audio, ...patch } });
   const updateFade = (patch) => update({ fade: { ...ops.fade, ...patch } });
+
+  const metronome = ops.audio.metronome || defaultMetronome();
+  const updateMetronome = (patch) => updateAudio({ metronome: { ...metronome, ...patch } });
+  const updateRamp = (patch) => updateMetronome({ ramp: { ...metronome.ramp || defaultRamp(), ...patch } });
+  const toggleRamp = (enabled) => updateMetronome({ ramp: enabled ? defaultRamp() : null });
+
+  const handleAudioModeChange = (mode) => {
+    if (mode === "metronome" && !ops.audio.metronome) {
+      updateAudio({ mode, metronome: defaultMetronome() });
+    } else {
+      updateAudio({ mode });
+    }
+  };
 
   const toggleFreeze = (enabled) => {
     update({ freeze_frame: enabled ? { position: "end", duration_sec: 1.0 } : null });
@@ -70,6 +85,19 @@ export default function ClipEditor({ clip, source, onChange }) {
       setAudioUploadStatus(`loaded: ${asset.filename}`);
     } catch (err) {
       setAudioUploadStatus(`failed: ${err.message}`);
+    }
+  };
+
+  const handleMetronomeSoundUpload = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    setSoundUploadStatus("uploading...");
+    try {
+      const asset = await api.uploadAudioAsset(file);
+      updateMetronome({ sound_asset_id: asset.id });
+      setSoundUploadStatus(`loaded: ${asset.filename}`);
+    } catch (err) {
+      setSoundUploadStatus(`failed: ${err.message}`);
     }
   };
 
@@ -201,10 +229,12 @@ export default function ClipEditor({ clip, source, onChange }) {
         <h4>Audio</h4>
         <label className="field-label">
           Mode:
-          <select value={ops.audio.mode} onChange={(e) => updateAudio({ mode: e.target.value })}>
+          <select value={ops.audio.mode} onChange={(e) => handleAudioModeChange(e.target.value)}>
+            <option value="inherit">Inherit (from group, or original if ungrouped)</option>
             <option value="original">Original</option>
             <option value="muted">Muted</option>
             <option value="replaced">Replace with file</option>
+            <option value="metronome">Metronome</option>
           </select>
         </label>
 
@@ -236,6 +266,118 @@ export default function ClipEditor({ clip, source, onChange }) {
                 onChange={(e) => updateAudio({ replacement_start_sec: parseFloat(e.target.value) || 0 })}
               />
             </label>
+          </div>
+        )}
+
+        {ops.audio.mode === "metronome" && (
+          <div className="sub-fields">
+            <label className="field-label">
+              Tempo:
+              <select value={metronome.tempo_mode} onChange={(e) => updateMetronome({ tempo_mode: e.target.value })}>
+                <option value="bpm">Fixed BPM</option>
+                <option value="beat_count">Beat count (spread evenly over this clip)</option>
+              </select>
+            </label>
+ 
+            {metronome.tempo_mode === "bpm" ? (
+              <label className="field-label">
+                BPM{metronome.ramp ? " (starting)" : ""}:
+                <input
+                  type="number"
+                  min="1"
+                  step="1"
+                  value={metronome.bpm}
+                  onChange={(e) => updateMetronome({ bpm: parseFloat(e.target.value) || 0 })}
+                />
+              </label>
+            ) : (
+              <label className="field-label">
+                Number of beats across this clip:
+                <input
+                  type="number"
+                  min="1"
+                  step="1"
+                  value={metronome.beat_count}
+                  onChange={(e) => updateMetronome({ beat_count: parseInt(e.target.value, 10) || 0 })}
+                />
+              </label>
+            )}
+ 
+            <label className="row">
+              <input
+                type="checkbox"
+                checked={metronome.include_end_beat}
+                onChange={(e) => updateMetronome({ include_end_beat: e.target.checked })}
+              />
+              Place a final beat exactly on this clip's last frame
+            </label>
+ 
+            <label className="row">
+              <input type="checkbox" checked={!!metronome.ramp} onChange={(e) => toggleRamp(e.target.checked)} />
+              Ramp tempo over time
+            </label>
+            {metronome.ramp && (
+              <div className="sub-fields">
+                <label className="field-label">
+                  Direction:
+                  <select value={metronome.ramp.direction} onChange={(e) => updateRamp({ direction: e.target.value })}>
+                    <option value="accelerate">Speed up</option>
+                    <option value="decelerate">Slow down</option>
+                  </select>
+                </label>
+                <label className="field-label small">
+                  Every
+                  <input
+                    type="number"
+                    min="1"
+                    step="1"
+                    value={metronome.ramp.every_n_beats}
+                    onChange={(e) => updateRamp({ every_n_beats: parseInt(e.target.value, 10) || 1 })}
+                  />
+                </label>
+                <div className="dim">beats, change tempo by:</div>
+                <label className="field-label small">
+                  Amount
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.1"
+                    value={metronome.ramp.change_amount}
+                    onChange={(e) => updateRamp({ change_amount: parseFloat(e.target.value) || 0 })}
+                  />
+                </label>
+                <label className="field-label">
+                  Unit:
+                  <select value={metronome.ramp.change_unit} onChange={(e) => updateRamp({ change_unit: e.target.value })}>
+                    <option value="bpm">BPM</option>
+                    <option value="percent">% of current tempo</option>
+                  </select>
+                </label>
+                <label className="field-label small">
+                  Min BPM
+                  <input
+                    type="number"
+                    min="1"
+                    step="1"
+                    value={metronome.ramp.min_bpm}
+                    onChange={(e) => updateRamp({ min_bpm: parseFloat(e.target.value) || 1 })}
+                  />
+                </label>
+                <label className="field-label small">
+                  Max BPM
+                  <input
+                    type="number"
+                    min="1"
+                    step="1"
+                    value={metronome.ramp.max_bpm}
+                    onChange={(e) => updateRamp({ max_bpm: parseFloat(e.target.value) || 1 })}
+                  />
+                </label>
+              </div>
+            )}
+            <label className="field-label">Click sound (optional -- leave empty for a synthesized click)</label>
+            <input type="file" accept="audio/*" onChange={handleMetronomeSoundUpload} />
+            {soundUploadStatus && <div className="dim">{soundUploadStatus}</div>}
           </div>
         )}
       </section>

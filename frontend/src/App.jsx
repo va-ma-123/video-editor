@@ -8,6 +8,8 @@ import ClipEditor from "./components/ClipEditor";
 import WipPlayer from "./components/WipPlayer";
 import ExportPanel from "./components/ExportPanel";
 import "./app.css";
+import GroupEditor from "./components/GroupEditor";
+import { descendantGroupIds, groupSpan } from "./groups";
 
 export default function App() {
   const [project, setProject] = useState(null);
@@ -146,11 +148,38 @@ export default function App() {
   };
 
   const selectedClip = project ? project.clips.find((c) => c.id === selectedClipId) : null;
+  const selectedGroup = project && selectedGroupId ? project.groups?.[selectedGroupId] || null : null;
 
   const handleClipEdit = (updatedClip) => {
     const clips = project.clips.map((c) => (c.id === updatedClip.id ? updatedClip : c));
     saveProject({ ...project, clips });
   };
+
+  const handleGroupEdit = (updatedGroup) => {
+    const prevGroup = project.groups[updatedGroup.id];
+    const modeChanged = prevGroup?.operations?.audio?.mode !== updatedGroup.operations?.audio?.mode;
+
+    let clips = project.clips;
+    let groups = { ...project.groups, [updatedGroup.id]: updatedGroup }
+
+    if(modeChanged) {
+      const span = groupSpan(project.clips, project.groups, updatedGroup.id);
+      if (span) {
+        const [start, end] = span;
+        clips = clips.map((c, i) => 
+          i >= start && i<= end
+            ? { ...c, operations: { ...c.operations, audio: { ...c.operations.audio, mode: "inherit" } } }
+            : c
+        );
+      }
+      descendantGroupIds(project.groups, updatedGroup.id).forEach((id) => {
+        const g = groups[id];
+        groups[id] = { ...g, operations: { ...g.operations, audio: { ...g.operations.audio, mode: "inherit" } } };
+      });
+    }
+
+    saveProject({ ...project, clips, groups });
+  }
 
   if (!project) {
     return (
@@ -214,11 +243,18 @@ export default function App() {
         </div>
 
         <div className="col col-right">
-          <ClipEditor
+          { selectedGroupId ? (
+            <GroupEditor 
+              group={selectedGroup} 
+              onChange={handleGroupEdit}
+            />
+          ) : (
+            <ClipEditor
             clip={selectedClip}
             source={selectedClip ? project.sources[selectedClip.source_id] : null}
             onChange={handleClipEdit}
-          />
+            />
+          )}
         </div>
       </div>
 

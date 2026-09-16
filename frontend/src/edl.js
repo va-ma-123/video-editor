@@ -6,7 +6,38 @@ export function defaultOperations() {
     freeze_frame: null,
     transform: { crop: null, rotate: 0, flip: null },
     fade: { fade_in: { duration_sec: 0 }, fade_out: { duration_sec: 0 } },
-    audio: { mode: "original", volume: 1.0, replacement_asset_id: null, replacement_start_sec: 0 },
+    audio: { mode: "inherit", volume: 1.0, replacement_asset_id: null, replacement_start_sec: 0, metronome: null },
+  };
+}
+
+export function defaultMetronome() {
+  return {
+    tempo_mode: "bpm", // bpm or beat_count
+    bpm: 120,
+    beat_count: 8,
+    // only ever do at the end of a clip or 
+    include_end_beat: false,
+    ramp: null, // or { direction, every_n_beats, change_amount, change_unit, min_bpm, max_bpm }
+    sound_asset_id: null, // null = backend-synthesized click, can override with your own metronome
+  };
+}
+
+export function defaultRamp() {
+  return {
+    direction: "accelerate", // or decelerate
+    every_n_beats: 4,
+    change_amount: 5,
+    change_unit: "bpm", // or percent
+    min_bpm: 20,
+    max_bpm: 300,
+  };
+}
+
+// Mirrors backend/app/models.py GroupOperations -- keep in sync.
+// Groups only carry an audio block for now for group-wide muting and metronome
+export function defaultGroupOperations() {
+  return {
+    audio: { mode: "inherit", metronome: null },
   };
 }
 

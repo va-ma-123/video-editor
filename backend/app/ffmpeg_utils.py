@@ -28,7 +28,13 @@ from .models import Clip, SourceInfo
 # as stale instead of silently being reused (this is how the -ss/-t ordering
 # fix for `reverse` could otherwise still show the old broken behavior even
 # after the code was corrected -- the cache didn't know anything had changed).
-RENDER_LOGIC_VERSION = 2
+# v3: audio.mode gained "inherit" and "metronome". clip_cache_key now takes
+# the caller-resolved audio fingerprint (see metronome.resolve_clip_audio)
+# instead of hashing clip.operations.audio directly, since an "inherit"
+# clip's effective audio can change without clip.operations itself changing
+# at all (its group's setting changed, or -- for a group-scoped metronome --
+# a sibling clip's duration shifted the beat schedule)
+RENDER_LOGIC_VERSION = 4
 
 
 class FFmpegError(RuntimeError):
@@ -101,15 +107,21 @@ def generate_proxy(original_path: str, proxy_path: str, max_height: int = 480) -
     run(cmd)
 
 
-def clip_cache_key(source: SourceInfo, clip: Clip, quality: str) -> str:
-    """Deterministic hash used to skip re-rendering unchanged clips."""
+def clip_cache_key(source: SourceInfo, clip: Clip, quality: str, resolved_audio: dict) -> str:
+    """
+    Deterministic hash used to skip re-rendering unchanged clips.
+    `resolved_audio` is the fingerprint from metronome.resolve_clip_audio
+    and NOT clip_operations.audio.model_dump()
+    """
+    ops_payload = clip.operations.model_dump()
+    ops_payload["audio"] = resolved_audio
     payload = json.dumps({
         "render_logic_version": RENDER_LOGIC_VERSION,
         "source_id": source.id,
         "source_mtime": Path(source.original_path).stat().st_mtime if quality == "final" else None,
         "start_frame": clip.start_frame,
         "end_frame": clip.end_frame,
-        "operations": clip.operations.model_dump(),
+        "operations": ops_payload,
         "quality": quality,
     }, sort_keys=True, default=str)
     return hashlib.sha256(payload.encode()).hexdigest()[:24]
@@ -173,7 +185,7 @@ def _build_video_filters(clip: Clip, fps: float) -> list[str]:
     return filters
 
 
-def _build_audio_filters(clip: Clip, speed_factor: float) -> list[str]:
+def _build_audio_filters(clip: Clip, speed_factor: float, sync_to_speed: bool = True) -> list[str]:
     filters = []
     ops = clip.operations
 
@@ -183,7 +195,7 @@ def _build_audio_filters(clip: Clip, speed_factor: float) -> list[str]:
     if ops.reverse:
         filters.append("areverse")
 
-    if speed_factor != 1.0 and ops.speed.pitch_correction:
+    if sync_to_speed and speed_factor != 1.0 and ops.speed.pitch_correction:
         # atempo only supports 0.5-2.0 per instance; chain multiple stages
         remaining = speed_factor
         stages = []
@@ -196,7 +208,7 @@ def _build_audio_filters(clip: Clip, speed_factor: float) -> list[str]:
         stages.append(remaining)
         for s in stages:
             filters.append(f"atempo={s:.6f}")
-    elif speed_factor != 1.0 and not ops.speed.pitch_correction:
+    elif sync_to_speed and speed_factor != 1.0 and not ops.speed.pitch_correction:
         # Let speed change pitch naturally: resample instead of atempo.
         # asetrate scales sample rate then aresample restores standard rate label.
         filters.append(f"asetrate=48000*{speed_factor},aresample=48000")
@@ -219,6 +231,7 @@ def render_clip(
     output_path: str,
     quality: str = "proxy",
     audio_asset_path: Optional[str] = None,
+    sync_audio_to_speed: bool = True,
 ) -> None:
     """Render a single EDL clip entry to a standalone mp4 file.
 
@@ -237,7 +250,7 @@ def render_clip(
     output_duration = (trim_duration / speed_factor) + freeze_extra
 
     video_filters = _build_video_filters(clip, fps)
-    audio_filters = _build_audio_filters(clip, speed_factor)
+    audio_filters = _build_audio_filters(clip, speed_factor, sync_to_speed=sync_audio_to_speed)
 
     # Resolve fade-out placeholders now that we know output_duration
     fade_out_d = clip.operations.fade.fade_out.duration_sec

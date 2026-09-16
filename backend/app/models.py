@@ -61,11 +61,31 @@ class FadeOp(BaseModel):
     fade_out: FadeSpec = Field(default_factory=FadeSpec)
 
 
+class RampOp(BaseModel):
+    direction: Literal["accelerate", "decelerate"] = "accelerate"
+    every_n_beats: int = 4
+    change_amount: int = 5
+    change_unit: Literal["bpm", "percent"] = "bpm"
+    min_bpm: float = 20.0
+    max_bpm: float = 300.0
+
+
+class MetronomeOp(BaseModel):
+    tempo_mode: Literal["bpm", "beat_count"] = "bpm"
+    bpm: float = 120.0
+    beat_count: int = 8
+    include_end_beat: bool = False
+    ramp: Optional[RampOp] = None
+    sound_asset_id: Optional[str] = None
+
+
+
 class AudioOp(BaseModel):
-    mode: Literal["original", "muted", "replaced"] = "original"
+    mode: Literal["inherit", "original", "muted", "replaced", "metronome"] = "inherit"
     volume: float = 1.0  # multiplier, applied when mode == "original"
     replacement_asset_id: Optional[str] = None  # references an uploaded audio file
     replacement_start_sec: float = 0.0  # offset into replacement audio to start from
+    metronome: Optional[MetronomeOp] = None
 
 
 class TransformOp(BaseModel):
@@ -93,16 +113,29 @@ class Clip(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Groups (purely organizational overlay over the flat `clips` order -- see
-# EDL_NOTES.md. Rendering/export never look at these; they exist only so the
-# timeline UI can collapse/expand/name contiguous runs of clips.)
+# Groups (organizational overlay over the flat `clips` order -- see
+# EDL_NOTES.md. Groups themselves carry only an audio block: trim/speed/
+# freeze/transform/fade stay clip-only. Group audio IS read by rendering now
+# -- it's the fallback a clip's "inherit" audio.mode resolves to. See
+# metronome.resolve_clip_audio for the actual resolution walk.)
 # ---------------------------------------------------------------------------
+
+
+class GroupAudioOp(BaseModel):
+    mode: Literal["inherit", "original", "muted", "metronome"] = "inherit"
+    metronome: Optional[MetronomeOp] = None
+
+
+class GroupOperations(BaseModel):
+    audio: GroupAudioOp = Field(default_factory=GroupAudioOp)
+
 
 class Group(BaseModel):
     id: str
     name: str = "Group"
     collapsed: bool = False
     parent_group_id: Optional[str] = None  # supports nesting groups within groups
+    operations: GroupOperations = Field(default_factory=GroupOperations)
 
 
 # ---------------------------------------------------------------------------
