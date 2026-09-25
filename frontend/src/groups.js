@@ -6,7 +6,7 @@
 // This file builds a displayable nested tree from that flat representation,
 // and implements the mutations (group/ungroup) that keep it consistent.
 
-import { defaultGroupOperations } from "./edl";
+import { defaultGroupOperations, newClipId } from "./edl";
 
 export function descendantGroupIds(groups, groupId) {
   const result = [];
@@ -227,4 +227,72 @@ export function reorderRange(clips, fromStart, fromEnd, toIndex) {
   else if (toIndex > fromStart) adjustedTo = fromStart; // dropped inside its own old span -- no-op position
   const result = [...rest.slice(0, adjustedTo), ...slice, ...rest.slice(adjustedTo)];
   return result;
+}
+
+// Duplicates a group, including nested subgroups and member clips
+// Reassigns fresh IDs to all duplicated entities while preserving heirarchy
+export function duplicateGroup(clips, groups, groupId) {
+  const span = groupSpan(clips, groups, groupId);
+  if (!span) return { clips, groups };
+
+  const [lo, hi] = span;
+  const targetGroup = groups[groupId];
+  if (!targetGroup) return { clips, groups };
+
+  // ID mapping table: old ID -> new ID
+  const idMap = {};
+  const newGroups = { ...groups };
+
+  // Helper to collect all subgroup IDs inside the target subtree
+  const collectSubgroups = (gid) => {
+    const subIds = [gid];
+    Object.values(groups).forEach((g) => {
+      if (g.parent_group_id === gid) {
+        subIds.push(...collectSubgroups(g.id));
+      }
+    });
+    return subIds;
+  };
+
+  const allSubgroupIds = collectSubgroups(groupId);
+
+  // Generate new IDs for all affected groups
+  allSubgroupIds.forEach((oldGid) => {
+    idMap[oldGid] = `group_${Math.random().toString(36).substr(2, 9)}`;
+  });
+
+  // Duplicate group objects with updated parent/child mappings
+  allSubgroupIds.forEach((oldGid) => {
+    const original = groups[oldGid];
+    const newGid = idMap[oldGid];
+    const newParentId = original.parent_group_id
+      ? (idMap[original.parent_group_id] || original.parent_group_id)
+      : null;
+
+    newGroups[newGid] = {
+      ...JSON.parse(JSON.stringify(original)),
+      id: newGid,
+      name: oldGid === groupId ? `${original.name} (Copy)` : original.name,
+      parent_group_id: newParentId,
+    };
+  });
+
+  // Duplicate clips within the span
+  const copiedClips = clips.slice(lo, hi + 1).map((clip) => {
+    const newClip = JSON.parse(JSON.stringify(clip));
+    newClip.id = newClipId();
+    if (clip.group_id && idMap[clip.group_id]) {
+      newClip.group_id = idMap[clip.group_id];
+    }
+    return newClip;
+  });
+
+  // Insert copied clips right after the original group's last clip
+  const updatedClips = [
+    ...clips.slice(0, hi + 1),
+    ...copiedClips,
+    ...clips.slice(hi + 1),
+  ];
+
+  return { clips: updatedClips, groups: newGroups };
 }

@@ -2,6 +2,7 @@ import { useState } from "react";
 import { estimateClipDuration, formatSec, newClipId } from "../edl";
 import {
   buildTimelineTree, groupSpan, canGroupRange, groupRange, ungroup, pruneEmptyGroups, reorderRange,
+  duplicateGroup,
 } from "../groups";
 
 export default function Timeline({ project, selectedClipId, selectedGroupId, playingClipId, onSelect, onSelectGroup, onChange }) {
@@ -69,6 +70,19 @@ export default function Timeline({ project, selectedClipId, selectedGroupId, pla
     if (!name) return;
     commit({ groups: { ...groups, [groupId]: { ...groups[groupId], name } } });
   };
+
+  const handleDuplicateGroup = (groupId) => {
+  console.log("1. Duplicate clicked for Group ID:", groupId);
+  console.log("2. Current clips before duplicate:", clips);
+  console.log("3. Current groups before duplicate:", groups);
+
+  const result = duplicateGroup(clips, groups, groupId);
+  console.log("4. Resulting clips after duplicate:", result.clips);
+  console.log("5. Resulting groups after duplicate:", result.groups);
+
+  // Test both or verify which one updates your App state
+  commit({ clips: result.clips, groups: result.groups });
+};
 
   const handleUngroup = (groupId) => {
     const result = ungroup(clips, groups, groupId);
@@ -267,6 +281,7 @@ export default function Timeline({ project, selectedClipId, selectedGroupId, pla
           </div>
           <div className="clip-actions" onClick={(e) => e.stopPropagation()}>
             <button onClick={() => handleRename(group.id)} title="Rename group">✎</button>
+            <button onClick={() => handleDuplicateGroup(group.id)} title="Duplicate group">⧉</button>
             <button onClick={() => handleUngroup(group.id)} title="Ungroup (keeps clips)">ungroup</button>
             <button onClick={() => handleDeleteGroup(group.id)} title="Delete group and its clips" className="danger">×</button>
           </div>
