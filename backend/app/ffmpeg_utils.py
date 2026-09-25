@@ -18,37 +18,61 @@ import subprocess
 import hashlib
 import shlex
 from pathlib import Path
-from typing import Optional, Any
+from typing import Optional
 
-from .models import Clip, SourceInfo, CropOp
+from .models import Clip, SourceInfo
 
 # Bump this any time render_clip's filter-building logic changes in a way that
 # would produce different output for the same clip inputs. Cache keys include
 # this, so old cached renders from before the change are automatically treated
-# as stale instead of silently being reused.
+# as stale instead of silently being reused (this is how the -ss/-t ordering
+# fix for `reverse` could otherwise still show the old broken behavior even
+# after the code was corrected -- the cache didn't know anything had changed).
 #
-# v3: audio.mode gained "inherit" and "metronome".
-# v4: a metronome's audio no longer gets re-stretched by speed factor.
-# v5: MetronomeOp gained start_frame/end_frame windowing.
-# v6: Added animated moving crop support via dynamic FFmpeg expressions.
-RENDER_LOGIC_VERSION = 6
+# v3: audio.mode gained "inherit" and "metronome". clip_cache_key now takes
+# the caller-resolved audio fingerprint (see metronome.resolve_clip_audio)
+# instead of hashing clip.operations.audio directly, since an "inherit"
+# clip's effective audio can change without clip.operations itself changing
+# at all (its group's setting changed, or -- for a group-scoped metronome --
+# a sibling clip's duration shifted the beat schedule).
+# v4: a metronome's audio no longer gets re-stretched by the clip's speed
+# factor (see ResolvedAudio.sync_to_speed / render_clip's sync_audio_to_speed)
+# -- same clip inputs as before now render differently for a metronome clip
+# that also has a non-1.0 speed factor.
+# v5: MetronomeOp gained start_frame/end_frame windowing. Same clip inputs
+# can now render differently in one specific case: a clip combining
+# freeze_frame with a default (unset start/end) metronome no longer gets
+# beats extending into the freeze-frame padding -- a beat window is
+# inherently frame-based, and freeze padding isn't a real source frame
+# range, so the default end now lands exactly at the clip's actual last
+# frame instead of implicitly including that padding.
+RENDER_LOGIC_VERSION = 5
 
 
 class FFmpegError(RuntimeError):
     pass
 
 
+# Every image-derived source is generated at this fixed frame rate. Two
+# clips with mismatched frame rates sitting in the same export isn't
+# something concat_clips currently guards against (it only probes and
+# reconciles *dimensions*, via _probe_dims, not fps) -- standardizing here
+# sidesteps that rather than requiring a separate fps-reconciliation pass.
 IMAGE_CLIP_FPS = 30.0
 
 
 def generate_video_from_image(image_path: str, output_path: str, duration_sec: float, fps: float = IMAGE_CLIP_FPS) -> None:
     """Turn a still image into a silent .mp4 of exactly `duration_sec`,
-    displaying the image the whole time."""
+    displaying the image the whole time. The result is then ingested exactly
+    like any uploaded video (probe_source, generate_proxy, ...) -- nothing
+    downstream needs to know it didn't start out as a video file."""
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     cmd = [
         "ffmpeg", "-y", "-loop", "1", "-i", image_path,
         "-t", f"{duration_sec:.6f}",
         "-r", str(fps),
+        # scale ensures even width/height -- yuv420p requires both dimensions
+        # divisible by 2, which an arbitrary source image has no reason to satisfy
         "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",
         "-pix_fmt", "yuv420p",
         "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
@@ -60,12 +84,14 @@ def generate_video_from_image(image_path: str, output_path: str, duration_sec: f
 
 def run(cmd: list[str]) -> str:
     proc = subprocess.run(cmd, capture_output=True, text=True)
+    # --- TEMPORARY DIAGNOSTIC (safe to remove once the freeze-frame issue is found) ---
     if "ffmpeg" in cmd[0]:
         print("=" * 60)
         print("FFMPEG CMD:", " ".join(shlex.quote(c) for c in cmd))
         print("--- stderr (last 3000 chars) ---")
         print(proc.stderr[-3000:])
         print("=" * 60)
+    # --- end temporary diagnostic ---
     if proc.returncode != 0:
         raise FFmpegError(f"Command failed: {' '.join(shlex.quote(c) for c in cmd)}\n{proc.stderr[-4000:]}")
     return proc.stdout
@@ -85,6 +111,7 @@ def probe_source(path: str) -> dict:
     if video_stream is None:
         raise FFmpegError("No video stream found")
 
+    # r_frame_rate is like "30000/1001"
     num, den = video_stream["r_frame_rate"].split("/")
     fps = float(num) / float(den)
 
@@ -93,6 +120,7 @@ def probe_source(path: str) -> dict:
     if total_frames is not None:
         total_frames = int(total_frames)
     else:
+        # Some containers don't report nb_frames; estimate from duration * fps
         total_frames = int(round(duration * fps))
 
     return {
@@ -106,7 +134,8 @@ def probe_source(path: str) -> dict:
 
 
 def generate_proxy(original_path: str, proxy_path: str, max_height: int = 480) -> None:
-    """Downscale to a low-res, fast-seeking proxy."""
+    """Downscale to a low-res, fast-seeking proxy. Same fps/duration as source
+    so frame numbers map 1:1 between proxy and original."""
     Path(proxy_path).parent.mkdir(parents=True, exist_ok=True)
     cmd = [
         "ffmpeg", "-y", "-i", original_path,
@@ -120,7 +149,13 @@ def generate_proxy(original_path: str, proxy_path: str, max_height: int = 480) -
 
 
 def clip_cache_key(source: SourceInfo, clip: Clip, quality: str, resolved_audio: dict) -> str:
-    """Deterministic hash used to skip re-rendering unchanged clips."""
+    """Deterministic hash used to skip re-rendering unchanged clips.
+
+    `resolved_audio` is the fingerprint from metronome.resolve_clip_audio,
+    not clip.operations.audio.model_dump() -- see RENDER_LOGIC_VERSION v3
+    note above for why hashing the raw (possibly "inherit") value would miss
+    real changes to what actually gets rendered.
+    """
     ops_payload = clip.operations.model_dump()
     ops_payload["audio"] = resolved_audio
     payload = json.dumps({
@@ -136,7 +171,10 @@ def clip_cache_key(source: SourceInfo, clip: Clip, quality: str, resolved_audio:
 
 
 def probe_duration(path: str) -> float:
-    """Just the duration of a rendered file, in seconds."""
+    """Just the duration of a rendered file, in seconds. Used to build exact
+    clip_id -> [start_sec, end_sec] boundaries for a concatenated preview, so
+    the timeline can highlight whichever clip is currently playing without
+    drifting out of sync from small per-clip encoding overhead."""
     out = run([
         "ffprobe", "-v", "error", "-show_entries", "format=duration",
         "-of", "default=noprint_wrappers=1:nokey=1", path,
@@ -144,58 +182,7 @@ def probe_duration(path: str) -> float:
     return float(out.strip())
 
 
-def _build_crop_filter_string(crop_data: Any, fallback_duration: float) -> Optional[str]:
-    """Generates an FFmpeg crop filter string supporting both static and animated crops."""
-    if not crop_data:
-        return None
-
-    # Handle Pydantic model conversion if needed
-    if isinstance(crop_data, CropOp):
-        crop_dict = crop_data.model_dump()
-    elif isinstance(crop_data, dict):
-        crop_dict = crop_data
-    else:
-        return None
-
-    is_animated = crop_dict.get("animated", False)
-
-    if not is_animated:
-        # Static crop fallback
-        x = crop_dict.get("x", 0)
-        y = crop_dict.get("y", 0)
-        w = crop_dict.get("w") if crop_dict.get("w") is not None else crop_dict.get("width", 1920)
-        h = crop_dict.get("h") if crop_dict.get("h") is not None else crop_dict.get("height", 1080)
-        return f"crop={w}:{h}:{x}:{y}"
-
-    # Extract animated parameters
-    start = crop_dict.get("start_crop") or {}
-    end = crop_dict.get("end_crop") or {}
-    
-    # Fall back to static params if start or end bounds are missing
-    s_x = start.get("x", crop_dict.get("x", 0))
-    s_y = start.get("y", crop_dict.get("y", 0))
-    s_w = start.get("w", crop_dict.get("w") or crop_dict.get("width", 1920))
-    s_h = start.get("h", crop_dict.get("h") or crop_dict.get("height", 1080))
-
-    e_x = end.get("x", s_x)
-    e_y = end.get("y", s_y)
-    e_w = end.get("w", s_w)
-    e_h = end.get("h", s_h)
-
-    duration = float(crop_dict.get("duration_sec") or fallback_duration)
-    if duration <= 0:
-        duration = fallback_duration or 1.0
-
-    # FFmpeg time-evaluated filter expressions
-    w_expr = f"'{s_w}+({e_w}-{s_w})*min(1,t/{duration:.6f})'"
-    h_expr = f"'{s_h}+({e_h}-{s_h})*min(1,t/{duration:.6f})'"
-    x_expr = f"'{s_x}+({e_x}-{s_x})*min(1,t/{duration:.6f})'"
-    y_expr = f"'{s_y}+({e_y}-{s_y})*min(1,t/{duration:.6f})'"
-
-    return f"crop={w_expr}:{h_expr}:{x_expr}:{y_expr}"
-
-
-def _build_video_filters(clip: Clip, fps: float, output_duration: float) -> list[str]:
+def _build_video_filters(clip: Clip, fps: float) -> list[str]:
     filters = []
     ops = clip.operations
 
@@ -204,10 +191,12 @@ def _build_video_filters(clip: Clip, fps: float, output_duration: float) -> list
 
     speed = ops.speed
     if speed.factor != 1.0:
+        # setpts: new_pts = old_pts / factor (factor > 1 = faster)
         filters.append(f"setpts=(1/{speed.factor})*PTS")
 
     if ops.freeze_frame and ops.freeze_frame.duration_sec > 0:
         ff = ops.freeze_frame
+        extra_frames = int(round(ff.duration_sec * fps))
         if ff.position == "start":
             filters.append(f"tpad=start_mode=clone:start_duration={ff.duration_sec}")
         else:
@@ -215,10 +204,7 @@ def _build_video_filters(clip: Clip, fps: float, output_duration: float) -> list
 
     t = ops.transform
     if t.crop:
-        crop_filter = _build_crop_filter_string(t.crop, fallback_duration=output_duration)
-        if crop_filter:
-            filters.append(crop_filter)
-
+        filters.append(f"crop={t.crop['width']}:{t.crop['height']}:{t.crop['x']}:{t.crop['y']}")
     if t.rotate == 90:
         filters.append("transpose=1")
     elif t.rotate == 180:
@@ -234,6 +220,9 @@ def _build_video_filters(clip: Clip, fps: float, output_duration: float) -> list
     if fade.fade_in.duration_sec > 0:
         filters.append(f"fade=t=in:st=0:d={fade.fade_in.duration_sec}")
     if fade.fade_out.duration_sec > 0:
+        # Applied relative to clip end; caller supplies duration via -t already,
+        # so we approximate using a large st and let ffmpeg clip it -- safer to
+        # compute exact clip duration and pass it in. See render_clip.
         filters.append(f"__FADE_OUT_PLACEHOLDER__={fade.fade_out.duration_sec}")
 
     return filters
@@ -249,7 +238,16 @@ def _build_audio_filters(clip: Clip, speed_factor: float, sync_to_speed: bool = 
     if ops.reverse:
         filters.append("areverse")
 
+    # sync_to_speed=False means this audio's timing has already been
+    # computed against the clip's final (post-speed) output duration -- a
+    # synthesized metronome track, specifically -- so re-stretching it here
+    # via atempo/asetrate would double-apply the speed change (a 220bpm
+    # metronome on a 0.5x clip would otherwise come out at 110bpm). The
+    # caller (main.py, via ResolvedAudio.sync_to_speed) decides this per
+    # clip based on where the audio actually came from; ordinary "original"
+    # or "replaced" audio keeps the old speed-synced behavior.
     if sync_to_speed and speed_factor != 1.0 and ops.speed.pitch_correction:
+        # atempo only supports 0.5-2.0 per instance; chain multiple stages
         remaining = speed_factor
         stages = []
         while remaining > 2.0:
@@ -262,6 +260,8 @@ def _build_audio_filters(clip: Clip, speed_factor: float, sync_to_speed: bool = 
         for s in stages:
             filters.append(f"atempo={s:.6f}")
     elif sync_to_speed and speed_factor != 1.0 and not ops.speed.pitch_correction:
+        # Let speed change pitch naturally: resample instead of atempo.
+        # asetrate scales sample rate then aresample restores standard rate label.
         filters.append(f"asetrate=48000*{speed_factor},aresample=48000")
 
     if ops.audio.volume != 1.0:
@@ -284,7 +284,15 @@ def render_clip(
     audio_asset_path: Optional[str] = None,
     sync_audio_to_speed: bool = True,
 ) -> None:
-    """Render a single EDL clip entry to a standalone mp4 file."""
+    """Render a single EDL clip entry to a standalone mp4 file.
+
+    quality: "proxy" uses source.proxy_path, "final" uses source.original_path.
+    sync_audio_to_speed: False for a synthesized metronome track (see
+    ResolvedAudio.sync_to_speed in metronome.py) -- its timing is already
+    computed against the clip's final post-speed duration, so it should play
+    at its own native rate rather than being stretched again by the clip's
+    speed factor.
+    """
     src_path = source.proxy_path if quality == "proxy" else source.original_path
     fps = source.fps or 30.0
 
@@ -294,11 +302,13 @@ def render_clip(
 
     speed_factor = clip.operations.speed.factor
     freeze_extra = clip.operations.freeze_frame.duration_sec if clip.operations.freeze_frame else 0.0
+    # Approximate output duration after speed + freeze, used to place fade-out correctly
     output_duration = (trim_duration / speed_factor) + freeze_extra
 
-    video_filters = _build_video_filters(clip, fps, output_duration)
+    video_filters = _build_video_filters(clip, fps)
     audio_filters = _build_audio_filters(clip, speed_factor, sync_to_speed=sync_audio_to_speed)
 
+    # Resolve fade-out placeholders now that we know output_duration
     fade_out_d = clip.operations.fade.fade_out.duration_sec
     if fade_out_d > 0:
         st = max(output_duration - fade_out_d, 0)
@@ -314,6 +324,13 @@ def render_clip(
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
 
     cmd = ["ffmpeg", "-y"]
+    # -ss AND -t must both be placed BEFORE -i to act as input options that
+    # actually bound what gets read from the source. Putting -t after -i
+    # silently makes it an output option instead -- it would then do nothing
+    # to limit what feeds into filters like `reverse`, which need the whole
+    # (unbounded) stream to have already ended before they can do anything,
+    # causing them to operate on the entire remainder of the source file
+    # rather than just the trimmed range.
     cmd += ["-ss", f"{start_sec:.6f}", "-t", f"{trim_duration:.6f}", "-i", src_path]
 
     has_replacement_audio = (
@@ -332,7 +349,7 @@ def render_clip(
         a_chain = ",".join(audio_filters) if audio_filters else "anull"
         filter_complex_parts.append(f"[0:a]{a_chain}[aout]")
     else:
-        filter_complex_parts.append("anullsrc=r=48000:cl=stereo[aout]")
+        filter_complex_parts.append(f"anullsrc=r=48000:cl=stereo[aout]")
 
     cmd += ["-filter_complex", ";".join(filter_complex_parts)]
     cmd += ["-map", "[vout]", "-map", "[aout]"]
@@ -358,7 +375,16 @@ def _probe_dims(path: str) -> tuple[int, int]:
 
 
 def concat_clips(rendered_paths: list[str], output_path: str) -> None:
-    """Concatenate already-rendered clip files."""
+    """Concatenate already-rendered clip files.
+
+    Individual clips can have different frame sizes (e.g. one was rotated
+    90deg, changing its aspect ratio). The concat demuxer's fast `-c copy`
+    path does NOT validate this -- it will happily "succeed" while producing
+    a corrupted output where mismatched segments render incorrectly. So we
+    always probe dimensions first: if they all match, use the fast copy path;
+    otherwise, normalize every clip to a common canvas (scale-to-fit + letterbox
+    pad) via filter_complex before concatenating, and re-encode.
+    """
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     dims = [_probe_dims(p) for p in rendered_paths]
     all_same = len(set(dims)) == 1
@@ -373,12 +399,15 @@ def concat_clips(rendered_paths: list[str], output_path: str) -> None:
             run(cmd)
             return
         except FFmpegError:
-            pass
+            pass  # fall through to the normalized re-encode path below
         finally:
             Path(list_file).unlink(missing_ok=True)
 
+    # Normalize to the largest width/height seen, preserving each clip's aspect
+    # ratio via scale-to-fit + black-bar padding, then concat + re-encode.
     target_w = max(w for w, h in dims)
     target_h = max(h for w, h in dims)
+    # Ensure even dimensions (required by yuv420p)
     target_w += target_w % 2
     target_h += target_h % 2
 
@@ -389,7 +418,7 @@ def concat_clips(rendered_paths: list[str], output_path: str) -> None:
         inputs += ["-i", p]
         filter_parts.append(
             f"[{i}:v:0]scale={target_w}:{target_h}:force_original_aspect_ratio=decrease,"
-            f"pad={target_w}:{target_h}:(ow-ih)/2:(oh-ih)/2,setsar=1[v{i}]"
+            f"pad={target_w}:{target_h}:(ow-iw)/2:(oh-ih)/2,setsar=1[v{i}]"
         )
         concat_refs.append(f"[v{i}][{i}:a:0]")
 

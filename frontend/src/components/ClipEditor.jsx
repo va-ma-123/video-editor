@@ -9,7 +9,7 @@ export default function ClipEditor({ clip, source, onChange }) {
   const [endDraft, setEndDraft] = useState("");
 
   useEffect(() => {
-    if (clip) {
+    if(clip) {
       setStartDraft(String(clip.start_frame));
       setEndDraft(String(clip.end_frame));
     }
@@ -47,7 +47,7 @@ export default function ClipEditor({ clip, source, onChange }) {
   };
 
   const toggleCrop = (enabled) => {
-    updateTransform({ crop: enabled ? { x: 0, y: 0, width: 1920, height: 1080, animated: false } : null });
+    updateTransform({ crop: enabled ? { x: 0, y: 0, width: 640, height: 360 } : null });
   };
 
   const applyRange = () => {
@@ -55,11 +55,13 @@ export default function ClipEditor({ clip, source, onChange }) {
     let rawEnd = parseInt(endDraft, 10);
     if (isNaN(rawStart)) rawStart = clip.start_frame;
     if (isNaN(rawEnd)) rawEnd = clip.end_frame;
-
+ 
+    // Clamp both together (not independently) so typing a new start doesn't
+    // get fought by a stale end value, or vice versa.
     let clampedStart = Math.max(0, Math.min(rawStart, maxFrame - 1));
     let clampedEnd = Math.max(clampedStart + 1, Math.min(rawEnd, maxFrame));
     if (clampedStart >= clampedEnd) clampedStart = Math.max(0, clampedEnd - 1);
-
+ 
     onChange({ ...clip, start_frame: clampedStart, end_frame: clampedEnd });
     setStartDraft(String(clampedStart));
     setEndDraft(String(clampedEnd));
@@ -67,10 +69,10 @@ export default function ClipEditor({ clip, source, onChange }) {
 
   const handleRangeKeyDown = (e) => {
     if (e.key === "Enter") {
-      e.target.blur();
+      e.target.blur(); // triggers the blur handler's applyRange below
     }
   };
-
+ 
   const isRangeDirty = startDraft !== String(clip.start_frame) || endDraft !== String(clip.end_frame);
 
   const handleAudioFileUpload = async (e) => {
@@ -97,63 +99,6 @@ export default function ClipEditor({ clip, source, onChange }) {
     } catch (err) {
       setSoundUploadStatus(`failed: ${err.message}`);
     }
-  };
-
-  // Helper to guarantee a consistent Crop object structure for the UI
-  const getNormalizedCrop = (cropData) => {
-    if (!cropData) {
-      return {
-        animated: false,
-        x: 0,
-        y: 0,
-        w: 1920,
-        h: 1080,
-        start_crop: { x: 0, y: 0, w: 1920, h: 1080 },
-        end_crop: { x: 0, y: 0, w: 1920, h: 1080 },
-        duration_sec: 2.0,
-      };
-    }
-
-    return {
-      animated: cropData.animated || false,
-      x: cropData.x ?? cropData.width ?? 0,
-      y: cropData.y ?? 0,
-      w: cropData.w ?? cropData.height ? cropData.w : (cropData.width ?? 1920),
-      h: cropData.h ?? cropData.height ?? 1080,
-      start_crop: cropData.start_crop || {
-        x: cropData.x ?? 0,
-        y: cropData.y ?? 0,
-        w: cropData.w ?? cropData.width ?? 1920,
-        h: cropData.h ?? cropData.height ?? 1080,
-      },
-      end_crop: cropData.end_crop || {
-        x: cropData.x ?? 0,
-        y: cropData.y ?? 0,
-        w: cropData.w ?? cropData.width ?? 1920,
-        h: cropData.h ?? cropData.height ?? 1080,
-      },
-      duration_sec: cropData.duration_sec ?? 2.0,
-    };
-  };
-
-  const currentCrop = getNormalizedCrop(ops.transform.crop);
-
-  const updateCropField = (updates) => {
-    const updatedCrop = {
-      ...currentCrop,
-      ...updates,
-    };
-    updateTransform({ crop: updatedCrop });
-  };
-
-  const handleNestedCropChange = (target, key, val) => {
-    const parsedVal = parseInt(val, 10) || 0;
-    updateCropField({
-      [target]: {
-        ...currentCrop[target],
-        [key]: parsedVal,
-      },
-    });
   };
 
   return (
@@ -362,7 +307,7 @@ export default function ClipEditor({ clip, source, onChange }) {
               Defaults to this clip's own start and end frame. Narrow the range to have the metronome only play
               over part of the clip.
             </div>
-
+ 
             {metronome.tempo_mode === "bpm" ? (
               <label className="field-label">
                 BPM{metronome.ramp ? " (starting)" : ""}:
@@ -386,7 +331,7 @@ export default function ClipEditor({ clip, source, onChange }) {
                 />
               </label>
             )}
-
+ 
             <label className="row">
               <input
                 type="checkbox"
@@ -395,7 +340,7 @@ export default function ClipEditor({ clip, source, onChange }) {
               />
               Place a final beat exactly on this clip's last frame
             </label>
-
+ 
             <label className="row">
               <input type="checkbox" checked={!!metronome.ramp} onChange={(e) => toggleRamp(e.target.checked)} />
               Ramp tempo over time
@@ -496,98 +441,21 @@ export default function ClipEditor({ clip, source, onChange }) {
           <input type="checkbox" checked={!!ops.transform.crop} onChange={(e) => toggleCrop(e.target.checked)} />
           Crop
         </label>
-
         {ops.transform.crop && (
-          <div className="sub-fields space-y-3">
-            <label className="row">
-              <input
-                type="checkbox"
-                checked={currentCrop.animated}
-                onChange={(e) => updateCropField({ animated: e.target.checked })}
-              />
-              Animated / Pan Crop
-            </label>
-
-            {!currentCrop.animated ? (
-              <div className="crop-fields">
-                <label className="field-label small">
-                  x
-                  <input
-                    type="number"
-                    value={currentCrop.x}
-                    onChange={(e) => updateCropField({ x: parseInt(e.target.value, 10) || 0 })}
-                  />
-                </label>
-                <label className="field-label small">
-                  y
-                  <input
-                    type="number"
-                    value={currentCrop.y}
-                    onChange={(e) => updateCropField({ y: parseInt(e.target.value, 10) || 0 })}
-                  />
-                </label>
-                <label className="field-label small">
-                  width
-                  <input
-                    type="number"
-                    value={currentCrop.w}
-                    onChange={(e) => updateCropField({ w: parseInt(e.target.value, 10) || 0 })}
-                  />
-                </label>
-                <label className="field-label small">
-                  height
-                  <input
-                    type="number"
-                    value={currentCrop.h}
-                    onChange={(e) => updateCropField({ h: parseInt(e.target.value, 10) || 0 })}
-                  />
-                </label>
-              </div>
-            ) : (
-              <div className="space-y-2">
-                <label className="field-label">
-                  Duration (sec):
-                  <input
-                    type="number"
-                    step="0.1"
-                    value={currentCrop.duration_sec}
-                    onChange={(e) => updateCropField({ duration_sec: parseFloat(e.target.value) || 1.0 })}
-                  />
-                </label>
-
-                <div className="sub-fields">
-                  <div className="dim bold mb-1">Start Keyframe Crop</div>
-                  <div className="crop-fields">
-                    {["x", "y", "w", "h"].map((k) => (
-                      <label key={`start_${k}`} className="field-label small">
-                        {k}
-                        <input
-                          type="number"
-                          value={currentCrop.start_crop[k]}
-                          onChange={(e) => handleNestedCropChange("start_crop", k, e.target.value)}
-                        />
-                      </label>
-                    ))}
-                  </div>
-                </div>
-
-                <div className="sub-fields">
-                  <div className="dim bold mb-1">End Keyframe Crop</div>
-                  <div className="crop-fields">
-                    {["x", "y", "w", "h"].map((k) => (
-                      <label key={`end_${k}`} className="field-label small">
-                        {k}
-                        <input
-                          type="number"
-                          value={currentCrop.end_crop[k]}
-                          onChange={(e) => handleNestedCropChange("end_crop", k, e.target.value)}
-                        />
-                      </label>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            )}
+          <div className="sub-fields crop-fields">
+            {["x", "y", "width", "height"].map((k) => (
+              <label key={k} className="field-label small">
+                {k}
+                <input
+                  type="number"
+                  min="0"
+                  value={ops.transform.crop[k]}
+                  onChange={(e) =>
+                    updateTransform({ crop: { ...ops.transform.crop, [k]: parseInt(e.target.value) || 0 } })
+                  }
+                />
+              </label>
+            ))}
           </div>
         )}
       </section>
