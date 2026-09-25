@@ -165,34 +165,80 @@ def effective_clip_duration(clip: Clip, source: SourceInfo) -> float:
     return (trim_duration / speed_factor) + freeze_extra
 
 
-def _group_scoped_beats_for_clip(project: Project, group_id: str, clip: Clip, met: MetronomeOp) -> tuple[list[float], float]:
-    """Compute one continuous beat timeline across the whole group's span,
-    then return the slice of it that falls within this particular clip,
-    shifted to clip-local time. Computing one schedule for the whole group
-    (rather than each clip re-deriving its own) is what keeps a ramp's
-    momentum carrying across a clip boundary, and what keeps the N-beats=
-    N-intervals spacing collision-free between clips whose durations differ.
-    """
+def _clip_local_output_time(clip: Clip, source: SourceInfo, frame: int) -> float:
+    """Convert an absolute source frame number into this clip's own
+    output-relative time in seconds (0 = this clip's own first frame,
+    the same timeline effective_clip_duration measures) -- i.e. post-speed,
+    matching the timeline the synthesized click track is actually built
+    against. Out-of-range frame values are clamped to the clip's own
+    [start_frame, end_frame] rather than raising, since a metronome
+    start/end frame can go stale if the clip's trim is changed after the
+    fact -- better to clamp into range than break the render."""
+    fps = source.fps or 30.0
+    speed_factor = clip.operations.speed.factor
+    clamped = max(clip.start_frame, min(clip.end_frame, frame))
+    return (clamped - clip.start_frame) / fps / speed_factor
+
+
+def _group_member_offsets(project: Project, group_id: str) -> list[tuple[Clip, SourceInfo, float, float]]:
+    """Every member of group_id, in order, as (clip, source, offset,
+    duration) -- offset is that clip's own start time on the group's shared
+    timeline (0 = the first member's start)."""
     members = clips_in_group(project, group_id)
-    durations = [effective_clip_duration(c, project.sources[c.source_id]) for c in members]
-    total = sum(durations)
-    group_beats = compute_beat_times(total, met)
-
+    entries = []
     offset = 0.0
-    clip_duration = None
-    for c, d in zip(members, durations):
-        if c.id == clip.id:
-            clip_duration = d
-            break
-        offset += d
+    for c in members:
+        source = project.sources[c.source_id]
+        duration = effective_clip_duration(c, source)
+        entries.append((c, source, offset, duration))
+        offset += duration
+    return entries
 
-    if clip_duration is None:
+
+def _group_scoped_beats_for_clip(project: Project, group_id: str, clip: Clip, met: MetronomeOp) -> tuple[list[float], float]:
+    """Compute one continuous beat timeline across the group's window (which
+    member clip to start/end on, and which frame within each -- defaulting
+    to the group's actual first and last member), then return the slice of
+    it that falls within this particular clip, shifted to clip-local time.
+    Computing one schedule for the whole window (rather than each clip
+    re-deriving its own) is what keeps a ramp's momentum carrying across a
+    clip boundary, and what keeps the N-beats=N-intervals spacing
+    collision-free between clips whose durations differ.
+    """
+    entries = _group_member_offsets(project, group_id)
+    by_id = {c.id: (c, source, offset, duration) for c, source, offset, duration in entries}
+
+    # start_clip_id/end_clip_id reference a specific member clip by id
+    # (rather than assuming "the first/last member"), so this stays correct
+    # even if the group gets reordered later. A reference to a clip that's
+    # no longer actually in the group (moved out, or a stale id) falls back
+    # to the group's real first/last member rather than raising mid-render.
+    start_entry = by_id.get(met.start_clip_id) or entries[0]
+    end_entry = by_id.get(met.end_clip_id) or entries[-1]
+    start_clip, start_source, start_offset, _ = start_entry
+    end_clip, end_source, end_offset, _ = end_entry
+
+    start_frame = met.start_frame if met.start_frame is not None else start_clip.start_frame
+    end_frame = met.end_frame if met.end_frame is not None else end_clip.end_frame
+
+    window_start = start_offset + _clip_local_output_time(start_clip, start_source, start_frame)
+    window_end = end_offset + _clip_local_output_time(end_clip, end_source, end_frame)
+    window_end = max(window_end, window_start)  # guards a start clip picked after the end clip
+    window_duration = window_end - window_start
+
+    # Shift the window-relative beat times back onto the group's absolute
+    # (0 = first clip's own start) shared timeline, same coordinate space
+    # the offset/clip_duration slicing below already works in.
+    group_beats = [window_start + t for t in compute_beat_times(window_duration, met)]
+
+    if clip.id not in by_id:
         # Shouldn't happen -- resolution only reaches here via this clip's
         # own ancestor chain, so it must be a member. Fail safe with silence
         # rather than raising mid-render.
         return [], effective_clip_duration(clip, project.sources[clip.source_id])
+    _, _, offset, clip_duration = by_id[clip.id]
 
-    is_last_member = members[-1].id == clip.id
+    is_last_member = entries[-1][0].id == clip.id
     local_beats = []
     for t in group_beats:
         if is_last_member:
@@ -302,7 +348,11 @@ class ResolvedAudio:
     asset_path: Optional[str]  # concrete file path, used when mode == "replaced"
     replacement_start_sec: float
     fingerprint: dict  # everything that actually determined the above -- see clip_cache_key
-    sync_to_speed: bool = True
+    sync_to_speed: bool = True  # False only for a metronome: its beat timing
+    # is already computed against the clip's final post-speed duration (see
+    # effective_clip_duration), so ffmpeg must play it at its own native rate
+    # rather than re-stretching it with atempo/asetrate -- that would
+    # literally halve a 220bpm click to 110bpm on a 0.5x-speed clip.
 
 
 def _find_audio_source(project: Project, clip: Clip):
@@ -325,17 +375,17 @@ def _find_audio_source(project: Project, clip: Clip):
 def resolve_clip_audio(project: Project, clip: Clip) -> ResolvedAudio:
     source = project.sources.get(clip.source_id)
     owner, audio_op = _find_audio_source(project, clip)
- 
+
     if audio_op is None or audio_op.mode == "original":
         volume = audio_op.volume if audio_op is not None else 1.0
         return ResolvedAudio(mode="original", volume=volume, asset_path=None,
                               replacement_start_sec=0.0,
                               fingerprint={"mode": "original", "volume": volume})
- 
+
     if audio_op.mode == "muted":
         return ResolvedAudio(mode="muted", volume=1.0, asset_path=None,
                               replacement_start_sec=0.0, fingerprint={"mode": "muted"})
- 
+
     if audio_op.mode == "replaced":
         # Clip-only mode -- groups don't offer "replaced" (one file standing
         # in for every clip in a group isn't a supported concept yet).
@@ -350,7 +400,7 @@ def resolve_clip_audio(project: Project, clip: Clip) -> ResolvedAudio:
                 "volume": audio_op.volume,
             },
         )
- 
+
     if audio_op.mode == "metronome":
         met = audio_op.metronome
         if met is None:
@@ -359,13 +409,19 @@ def resolve_clip_audio(project: Project, clip: Clip) -> ResolvedAudio:
             # original audio rather than producing an empty click track.
             return ResolvedAudio(mode="original", volume=1.0, asset_path=None,
                                   replacement_start_sec=0.0, fingerprint={"mode": "original"})
- 
+
         if owner == "clip":
             duration = effective_clip_duration(clip, source)
-            beats = compute_beat_times(duration, met)
+            # start_clip_id/end_clip_id are meaningless at clip scope --
+            # there's only ever this one clip -- so only start_frame/end_frame matter here.
+            start_frame = met.start_frame if met.start_frame is not None else clip.start_frame
+            end_frame = met.end_frame if met.end_frame is not None else clip.end_frame
+            window_start = _clip_local_output_time(clip, source, start_frame)
+            window_end = max(_clip_local_output_time(clip, source, end_frame), window_start)
+            beats = [window_start + t for t in compute_beat_times(window_end - window_start, met)]
         else:
             beats, duration = _group_scoped_beats_for_clip(project, owner, clip, met)
- 
+
         sound_path = _resolve_audio_asset_path(met.sound_asset_id) if met.sound_asset_id else None
         fingerprint = {
             "mode": "metronome",
@@ -380,7 +436,7 @@ def resolve_clip_audio(project: Project, clip: Clip) -> ResolvedAudio:
         return ResolvedAudio(mode="replaced", volume=1.0, asset_path=wav_path,
                               replacement_start_sec=0.0, fingerprint=fingerprint,
                               sync_to_speed=False)
- 
+
     # Unreachable given the Literal types on AudioOp/GroupAudioOp, but fail
     # safe rather than let an unrecognized mode crash a render.
     return ResolvedAudio(mode="original", volume=1.0, asset_path=None,

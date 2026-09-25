@@ -1,15 +1,15 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { api } from "./api";
 import { defaultOperations, newClipId } from "./edl";
+import { groupSpan, descendantGroupIds } from "./groups";
 import UploadPanel from "./components/UploadPanel";
 import FramePreview from "./components/FramePreview";
 import Timeline from "./components/Timeline";
 import ClipEditor from "./components/ClipEditor";
+import GroupEditor from "./components/GroupEditor";
 import WipPlayer from "./components/WipPlayer";
 import ExportPanel from "./components/ExportPanel";
 import "./app.css";
-import GroupEditor from "./components/GroupEditor";
-import { descendantGroupIds, groupSpan } from "./groups";
 
 export default function App() {
   const [project, setProject] = useState(null);
@@ -19,11 +19,18 @@ export default function App() {
   const [selectedGroupId, setSelectedGroupId] = useState(null);
   const [playingClipId, setPlayingClipId] = useState(null);
   const [error, setError] = useState(null);
+  const [editingName, setEditingName] = useState(false);
+  const [nameDraft, setNameDraft] = useState("");
+  const nameInputRef = useRef(null);
   const pollingSources = useRef(new Set());
 
   useEffect(() => {
     api.listProjects().then(setProjectList).catch((e) => setError(e.message));
   }, []);
+
+  useEffect(() => {
+    if (editingName) nameInputRef.current?.focus();
+  }, [editingName]);
 
   const pendingSaveRef = useRef(Promise.resolve());
 
@@ -56,6 +63,45 @@ export default function App() {
     setSelectedSourceId(Object.keys(p.sources)[0] || null);
     setSelectedClipId(null);
     setSelectedGroupId(null);
+  };
+
+  const startEditingName = () => {
+    setNameDraft(project.name);
+    setEditingName(true);
+  };
+
+  const commitNameEdit = () => {
+    const trimmed = nameDraft.trim();
+    setEditingName(false);
+    if (!trimmed || trimmed === project.name) return;
+    saveProject({ ...project, name: trimmed });
+    // Keep the landing page's list in sync too, so the new name is there
+    // if the person goes back to it without a full reload.
+    api.listProjects().then(setProjectList).catch(() => {});
+  };
+
+  const cancelNameEdit = () => setEditingName(false);
+
+  const handleDeleteProjectFromList = async (e, id, name) => {
+    e.stopPropagation(); // don't trigger loadProject on the row underneath
+    if (!window.confirm(`Delete "${name}"? This cannot be undone.`)) return;
+    try {
+      await api.deleteProject(id);
+      setProjectList((prev) => prev.filter((p) => p.id !== id));
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  const handleDeleteCurrentProject = async () => {
+    if (!window.confirm(`Delete "${project.name}"? This cannot be undone.`)) return;
+    try {
+      await api.deleteProject(project.id);
+      setProject(null);
+      api.listProjects().then(setProjectList).catch(() => {});
+    } catch (err) {
+      setError(err.message);
+    }
   };
 
   // Poll any source still generating its proxy until it's ready or failed.
@@ -149,6 +195,21 @@ export default function App() {
 
   const selectedClip = project ? project.clips.find((c) => c.id === selectedClipId) : null;
   const selectedGroup = project && selectedGroupId ? project.groups?.[selectedGroupId] || null : null;
+  const selectedGroupMembers = (() => {
+    if (!project || !selectedGroupId) return null;
+    const span = groupSpan(project.clips, project.groups, selectedGroupId);
+    if (!span) return null;
+    const [start, end] = span;
+    // Full ordered member list (not just first/last) so the metronome
+    // window can start or end on ANY clip in the group, not only its
+    // actual first/last member -- see GroupEditor's clip-picker fields.
+    return project.clips.slice(start, end + 1).map((c, i) => ({
+      id: c.id,
+      index: i,
+      startFrame: c.start_frame,
+      endFrame: c.end_frame,
+    }));
+  })();
 
   const handleClipEdit = (updatedClip) => {
     const clips = project.clips.map((c) => (c.id === updatedClip.id ? updatedClip : c));
@@ -160,14 +221,24 @@ export default function App() {
     const modeChanged = prevGroup?.operations?.audio?.mode !== updatedGroup.operations?.audio?.mode;
 
     let clips = project.clips;
-    let groups = { ...project.groups, [updatedGroup.id]: updatedGroup }
+    let groups = { ...project.groups, [updatedGroup.id]: updatedGroup };
 
-    if(modeChanged) {
+    if (modeChanged) {
+      // "Group always wins": the moment this group's own audio mode
+      // changes, reset every member clip -- and any nested subgroup's own
+      // audio override -- back to "inherit". Without this, a clip (or
+      // subgroup) that already has an explicit setting keeps winning over
+      // the group per the normal inherit-resolution rule, and the new
+      // group setting silently never takes effect for it. A clip/subgroup
+      // can still be given its own override afterward for a deliberate
+      // exception; only *changing* the group's mode re-triggers this reset,
+      // so that later exception won't get clobbered by e.g. just tweaking
+      // the group's BPM.
       const span = groupSpan(project.clips, project.groups, updatedGroup.id);
       if (span) {
         const [start, end] = span;
-        clips = clips.map((c, i) => 
-          i >= start && i<= end
+        clips = clips.map((c, i) =>
+          i >= start && i <= end
             ? { ...c, operations: { ...c.operations, audio: { ...c.operations.audio, mode: "inherit" } } }
             : c
         );
@@ -179,7 +250,7 @@ export default function App() {
     }
 
     saveProject({ ...project, clips, groups });
-  }
+  };
 
   if (!project) {
     return (
@@ -191,9 +262,18 @@ export default function App() {
           <div className="project-list">
             <h3>Existing projects</h3>
             {projectList.map((p) => (
-              <button key={p.id} className="project-item" onClick={() => loadProject(p.id)}>
-                {p.name} <span className="dim">({p.clip_count} clips)</span>
-              </button>
+              <div key={p.id} className="project-item-row">
+                <button className="project-item" onClick={() => loadProject(p.id)}>
+                  {p.name} <span className="dim">({p.clip_count} clips)</span>
+                </button>
+                <button
+                  className="danger source-delete"
+                  onClick={(e) => handleDeleteProjectFromList(e, p.id, p.name)}
+                  title="Delete project"
+                >
+                  ×
+                </button>
+              </div>
             ))}
           </div>
         )}
@@ -206,7 +286,24 @@ export default function App() {
     <div className="app-shell">
       <header className="app-header">
         <button className="link-button" onClick={() => setProject(null)}>← Projects</button>
-        <h2>{project.name}</h2>
+        {editingName ? (
+          <input
+            ref={nameInputRef}
+            className="project-name-input"
+            value={nameDraft}
+            onChange={(e) => setNameDraft(e.target.value)}
+            onBlur={commitNameEdit}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") commitNameEdit();
+              if (e.key === "Escape") cancelNameEdit();
+            }}
+          />
+        ) : (
+          <h2 onClick={startEditingName} title="Click to rename">{project.name}</h2>
+        )}
+        <button className="link-button danger header-delete-btn" onClick={handleDeleteCurrentProject}>
+          Delete project
+        </button>
       </header>
 
       <div className="app-grid">
@@ -243,16 +340,13 @@ export default function App() {
         </div>
 
         <div className="col col-right">
-          { selectedGroupId ? (
-            <GroupEditor 
-              group={selectedGroup} 
-              onChange={handleGroupEdit}
-            />
+          {selectedGroupId ? (
+            <GroupEditor group={selectedGroup} memberClips={selectedGroupMembers} onChange={handleGroupEdit} />
           ) : (
             <ClipEditor
-            clip={selectedClip}
-            source={selectedClip ? project.sources[selectedClip.source_id] : null}
-            onChange={handleClipEdit}
+              clip={selectedClip}
+              source={selectedClip ? project.sources[selectedClip.source_id] : null}
+              onChange={handleClipEdit}
             />
           )}
         </div>

@@ -159,7 +159,7 @@ export default function FramePreview({ source, onMarkRange }) {
           className="primary"
           disabled={inFrame === null || outFrame === null || outFrame <= inFrame}
           onClick={() => {
-            onMarkRange(inFrame, outFrame + 1); // end_frame is exclusive
+            onMarkRange(inFrame, outFrame - 1); // end_frame is exclusive
             setInFrame(null);
             setOutFrame(null);
           }}

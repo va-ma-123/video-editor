@@ -166,7 +166,8 @@ export default function Timeline({ project, selectedClipId, selectedGroupId, pla
     if (ops.transform.rotate) badges.push(`rot${ops.transform.rotate}`);
     if (ops.transform.crop) badges.push("crop");
     if (ops.transform.flip) badges.push(ops.transform.flip);
-    if (ops.audio.mode !== "inherit") badges.push(ops.audio.mode);
+    const noOpAudioModes = clip.group_id ? ["inherit"] : ["inherit", "original"];
+    if (!noOpAudioModes.includes(ops.audio.mode)) badges.push(ops.audio.mode);
     if (ops.fade.fade_in.duration_sec > 0 || ops.fade.fade_out.duration_sec > 0) badges.push("fade");
     return badges;
   };

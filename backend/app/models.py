@@ -77,7 +77,10 @@ class MetronomeOp(BaseModel):
     include_end_beat: bool = False
     ramp: Optional[RampOp] = None
     sound_asset_id: Optional[str] = None
-
+    start_clip_id: Optional[str] = None # None means this clip, or the group's actual first member clip
+    end_clip_id: Optional[str] = None # Same as above - means this clip, or group's actual last member clip
+    start_frame: Optional[int] = None # None means default - start of clip
+    end_frame: Optional[int] = None # same as above - means end of clip
 
 
 class AudioOp(BaseModel):

@@ -278,6 +278,35 @@ export default function ClipEditor({ clip, source, onChange }) {
                 <option value="beat_count">Beat count (spread evenly over this clip)</option>
               </select>
             </label>
+
+            <div className="row">
+              <label className="field-label small">
+                First beat at frame
+                <input
+                  type="number"
+                  min={clip.start_frame}
+                  max={clip.end_frame}
+                  step="1"
+                  value={metronome.start_frame ?? clip.start_frame}
+                  onChange={(e) => updateMetronome({ start_frame: parseInt(e.target.value, 10) })}
+                />
+              </label>
+              <label className="field-label small">
+                Last beat at frame
+                <input
+                  type="number"
+                  min={clip.start_frame}
+                  max={clip.end_frame}
+                  step="1"
+                  value={metronome.end_frame ?? clip.end_frame}
+                  onChange={(e) => updateMetronome({ end_frame: parseInt(e.target.value, 10) })}
+                />
+              </label>
+            </div>
+            <div className="dim">
+              Defaults to this clip's own start and end frame. Narrow the range to have the metronome only play
+              over part of the clip.
+            </div>
  
             {metronome.tempo_mode === "bpm" ? (
               <label className="field-label">

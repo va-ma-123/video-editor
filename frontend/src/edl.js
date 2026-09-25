@@ -10,7 +10,7 @@ export function defaultOperations() {
   };
 }
 
-export function defaultMetronome() {
+export function defaultMetronome({ startClipId = null, endClipId = null,  startFrame = null, endFrame = null } = {}) {
   return {
     tempo_mode: "bpm", // bpm or beat_count
     bpm: 120,
@@ -19,6 +19,10 @@ export function defaultMetronome() {
     include_end_beat: false,
     ramp: null, // or { direction, every_n_beats, change_amount, change_unit, min_bpm, max_bpm }
     sound_asset_id: null, // null = backend-synthesized click, can override with your own metronome
+    start_clip_id: startClipId,
+    end_clip_id: endClipId,
+    start_frame: startFrame,
+    end_frame: endFrame,
   };
 }
 
