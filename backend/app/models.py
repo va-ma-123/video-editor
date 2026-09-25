@@ -9,7 +9,7 @@ This mirrors the JSON shape we designed in planning:
 """
 from __future__ import annotations
 
-from typing import Optional, Literal, Dict, List
+from typing import Optional, Literal, Dict, List, Union
 from pydantic import BaseModel, Field
 import uuid
 
@@ -123,9 +123,32 @@ class AudioOp(BaseModel):
     replacement_start_sec: float = 0.0  # offset into replacement audio to start from
     metronome: Optional[MetronomeOp] = None  # used when mode == "metronome"
 
+class CropBounds(BaseModel):
+    x: int = 0
+    y: int = 0
+    w: int = 1920
+    h: int = 1080
+
+class CropOp(BaseModel):
+    animated: bool = False
+
+    # static coordinates (animated == false or fallbacks)
+    x: Optional[int] = 0
+    y: Optional[int] = 0
+    w: Optional[int] = 1920
+    h: Optional[int] = 1080
+
+    width: Optional[int] = None
+    height: Optional[int] = None
+
+    # animated parameters (animated == true)
+    start_crop = Optional[CropBounds] = None
+    end_crop = Optional[CropBounds] = None
+    duration_sec = Optional[float] = 2.0
+
 
 class TransformOp(BaseModel):
-    crop: Optional[Dict[str, int]] = None  # {x, y, width, height} in source pixel space
+    crop: Optional[Union[CropOp, Dict[str, int]]] = None
     rotate: Literal[0, 90, 180, 270] = 0
     flip: Optional[Literal["horizontal", "vertical"]] = None
 
