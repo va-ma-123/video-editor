@@ -166,6 +166,16 @@ export default function Timeline({ project, selectedClipId, selectedGroupId, pla
     if (ops.transform.rotate) badges.push(`rot${ops.transform.rotate}`);
     if (ops.transform.crop) badges.push("crop");
     if (ops.transform.flip) badges.push(ops.transform.flip);
+    // A clip inside a group: "inherit" is the do-nothing default (defers to
+    // the group), so anything else -- including an explicit "original" --
+    // is worth flagging, since it means this clip deliberately overrides
+    // whatever its group says.
+    //
+    // A standalone clip has no group to defer to, so "inherit" and
+    // "original" resolve identically at render time (both just fall back to
+    // plain original audio) -- flagging "inherit" there would badge every
+    // untouched clip for no reason. Only a genuine effect (muted/replaced/
+    // metronome) is worth a badge in that case.
     const noOpAudioModes = clip.group_id ? ["inherit"] : ["inherit", "original"];
     if (!noOpAudioModes.includes(ops.audio.mode)) badges.push(ops.audio.mode);
     if (ops.fade.fade_in.duration_sec > 0 || ops.fade.fade_out.duration_sec > 0) badges.push("fade");
@@ -198,7 +208,7 @@ export default function Timeline({ project, selectedClipId, selectedGroupId, pla
         <div className="clip-drag-handle" title="Drag to reorder">⠿</div>
         <div className="clip-index">{isPlaying ? " ▶" : node.flatIndex + 1}</div>
         <div className="clip-info">
-          <div className="clip-name">{source?.filename || clip.source_id}</div>
+          <div className="clip-name">{source?.source_kind === "image" ? "🖼️ " : ""}{source?.filename || clip.source_id}</div>
           <div className="clip-meta mono">
             f{clip.start_frame}–{clip.end_frame} · {formatSec(duration)}
           </div>
@@ -225,6 +235,8 @@ export default function Timeline({ project, selectedClipId, selectedGroupId, pla
     const isDragOver = dragOverFlatIndex === node.startIndex && !isDragging;
     const inRange = selectedRange && node.startIndex >= selectedRange[0] && node.endIndex <= selectedRange[1];
     const clipCount = node.endIndex - node.startIndex + 1;
+    // Older projects saved before group-level operations existed won't have
+    // this field yet -- treat that the same as an explicit "inherit".
     const groupAudioMode = group.operations?.audio?.mode || "inherit";
 
     return (
@@ -250,11 +262,7 @@ export default function Timeline({ project, selectedClipId, selectedGroupId, pla
             <span className="group-name">{containsPlaying ? "▶" : "📁"} {group.name}</span>
             <span className="dim mono"> ({clipCount} clip{clipCount === 1 ? "" : "s"})</span>
             {groupAudioMode !== "inherit" && (
-              <span className="clip-badges">
-                <span className="badge">
-                  {groupAudioMode}
-                </span>
-              </span>
+              <span className="clip-badges"><span className="badge">{groupAudioMode}</span></span>
             )}
           </div>
           <div className="clip-actions" onClick={(e) => e.stopPropagation()}>

@@ -7,7 +7,7 @@ import traceback
 from pathlib import Path
 from typing import Dict, Optional
 
-from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, Request
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, FileResponse
 
@@ -200,21 +200,52 @@ def _generate_proxy_background(project_id: str, source_id: str):
             pass
 
 
+IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
+# .gif deliberately excluded -- an animated gif is ambiguous under this
+# feature (loop just its first frame? honor its own timing instead of
+# duration_sec? treat it as a tiny video instead?) and isn't handled here.
+
+
 @app.post("/api/projects/{project_id}/sources")
-def upload_source(project_id: str, file: UploadFile = File(...)):
+def upload_source(project_id: str, file: UploadFile = File(...), duration_sec: Optional[float] = Form(None)):
     project = storage.load_project(project_id)
 
     source_id = new_id("source")
-    ext = Path(file.filename).suffix or ".mp4"
-    original_path = storage.ORIGINALS_DIR / f"{source_id}{ext}"
-    with open(original_path, "wb") as f:
-        shutil.copyfileobj(file.file, f)
+    ext = (Path(file.filename).suffix or "").lower()
+    is_image = ext in IMAGE_EXTENSIONS
+
+    if is_image:
+        if not duration_sec or duration_sec <= 0:
+            raise HTTPException(400, "duration_sec (a positive number of seconds) is required when uploading an image")
+        # Write the raw upload to a temp path, convert it into a real silent
+        # .mp4 of the requested length, then discard the temp image file --
+        # from here on this source goes through the exact same ingestion
+        # path (probe_source, generate_proxy) as an uploaded video, and
+        # render_clip/concat_clips/metronome never need to know the
+        # difference. We don't keep the original image around: there's no
+        # "extend the duration later" feature built on top of this yet, and
+        # keeping unused originals would just be silent storage growth.
+        temp_image_path = storage.ORIGINALS_DIR / f"{source_id}_src{ext}"
+        with open(temp_image_path, "wb") as f:
+            shutil.copyfileobj(file.file, f)
+        original_path = storage.ORIGINALS_DIR / f"{source_id}.mp4"
+        try:
+            ffmpeg_utils.generate_video_from_image(str(temp_image_path), str(original_path), duration_sec)
+        except ffmpeg_utils.FFmpegError as e:
+            raise HTTPException(400, f"Couldn't process image: {e}")
+        finally:
+            temp_image_path.unlink(missing_ok=True)
+    else:
+        original_path = storage.ORIGINALS_DIR / f"{source_id}{ext or '.mp4'}"
+        with open(original_path, "wb") as f:
+            shutil.copyfileobj(file.file, f)
 
     source = SourceInfo(
         id=source_id,
         filename=file.filename,
         original_path=str(original_path),
         proxy_status="pending",
+        source_kind="image" if is_image else "video",
     )
     project.sources[source_id] = source
     storage.save_project(project)

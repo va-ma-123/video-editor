@@ -31,9 +31,10 @@ export const api = {
 
   deleteProject: (id) => fetch(`${BASE}/api/projects/${id}`, { method: "DELETE" }).then(handle),
 
-  uploadSource: (projectId, file) => {
+  uploadSource: (projectId, file, durationSec) => {
     const form = new FormData();
     form.append("file", file);
+    if (durationSec != null) form.append("duration_sec", String(durationSec));
     return fetch(`${BASE}/api/projects/${projectId}/sources`, { method: "POST", body: form }).then(handle);
   },
 

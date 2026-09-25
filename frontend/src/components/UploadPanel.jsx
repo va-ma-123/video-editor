@@ -8,13 +8,14 @@ export default function UploadPanel({ project, onSourceAdded, selectedSourceId, 
   const [deletingId, setDeletingId] = useState(null);
   const [error, setError] = useState(null);
   const [dragActive, setDragActive] = useState(false);
+  const [imageDuration, setImageDuration] = useState(5); // seconds -- applied to any image file in a batch
   const dragDepth = useRef(0); // dragenter/dragleave fire on every child element too; a plain counter is the
   // standard way to tell "left the panel entirely" from "moved between two children inside it"
 
   const uploadFiles = async (files) => {
-    const videoFiles = Array.from(files).filter((f) => f.type.startsWith("video/"));
-    if (videoFiles.length === 0) {
-      setError(files.length > 0 ? "No video files found in what was dropped." : null);
+    const usable = Array.from(files).filter((f) => f.type.startsWith("video/") || f.type.startsWith("image/"));
+    if (usable.length === 0) {
+      setError(files.length > 0 ? "No video or image files found in what was dropped." : null);
       return;
     }
     setUploading(true);
@@ -22,13 +23,15 @@ export default function UploadPanel({ project, onSourceAdded, selectedSourceId, 
     // Sequential rather than parallel: keeps proxy-generation load on the
     // backend predictable, and lets the progress readout ("2 of 5") mean
     // something concrete rather than "some indeterminate number in flight".
-    for (let i = 0; i < videoFiles.length; i++) {
-      setUploadProgress(videoFiles.length > 1 ? { done: i, total: videoFiles.length } : null);
+    for (let i = 0; i < usable.length; i++) {
+      setUploadProgress(usable.length > 1 ? { done: i, total: usable.length } : null);
+      const file = usable[i];
+      const isImage = file.type.startsWith("image/");
       try {
-        const source = await api.uploadSource(project.id, videoFiles[i]);
+        const source = await api.uploadSource(project.id, file, isImage ? imageDuration : null);
         onSourceAdded(source);
       } catch (err) {
-        setError(`${videoFiles[i].name}: ${err.message}`);
+        setError(`${file.name}: ${err.message}`);
         // Keep going with the rest of the batch rather than abandoning it --
         // one bad file (wrong codec, too large, whatever) shouldn't block
         // the others that were dropped alongside it.
@@ -103,8 +106,19 @@ export default function UploadPanel({ project, onSourceAdded, selectedSourceId, 
       onDrop={handleDrop}
     >
       <h3>Source videos</h3>
-      <input ref={inputRef} type="file" accept="video/*" multiple onChange={handleFile} disabled={uploading} />
-      <div className="dim small">or drag &amp; drop video files here</div>
+      <input ref={inputRef} type="file" accept="video/*,image/*" multiple onChange={handleFile} disabled={uploading} />
+      <div className="dim small">or drag &amp; drop video or image files here</div>
+      <label className="field-label small">
+        Image duration (sec)
+        <input
+          type="number"
+          min="0.1"
+          step="0.5"
+          value={imageDuration}
+          onChange={(e) => setImageDuration(parseFloat(e.target.value) || 0.1)}
+        />
+      </label>
+      <div className="dim small">Applies to any image files you upload -- how long that image plays as a clip.</div>
       {uploading && (
         <span className="dim small">
           <span className="spinner" /> {uploadProgress ? `Uploading ${uploadProgress.done + 1} of ${uploadProgress.total}...` : "Uploading..."}
@@ -120,9 +134,13 @@ export default function UploadPanel({ project, onSourceAdded, selectedSourceId, 
             onClick={() => onSelectSource(s.id)}
           >
             <div className="source-item-main">
-              <div className="source-name">{s.filename}</div>
+              <div className="source-name">{s.source_kind === "image" ? "🖼️ " : ""}{s.filename}</div>
               <div className="dim mono">
-                {s.proxy_status === "ready" ? `${s.total_frames}f @ ${s.fps.toFixed(2)}fps` : s.proxy_status}
+                {s.proxy_status !== "ready"
+                  ? s.proxy_status
+                  : s.source_kind === "image"
+                  ? `image \u00b7 ${s.duration_sec.toFixed(1)}s`
+                  : `${s.total_frames}f @ ${s.fps.toFixed(2)}fps`}
               </div>
             </div>
             <button

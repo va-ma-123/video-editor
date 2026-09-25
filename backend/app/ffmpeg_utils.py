@@ -28,17 +28,58 @@ from .models import Clip, SourceInfo
 # as stale instead of silently being reused (this is how the -ss/-t ordering
 # fix for `reverse` could otherwise still show the old broken behavior even
 # after the code was corrected -- the cache didn't know anything had changed).
+#
 # v3: audio.mode gained "inherit" and "metronome". clip_cache_key now takes
 # the caller-resolved audio fingerprint (see metronome.resolve_clip_audio)
 # instead of hashing clip.operations.audio directly, since an "inherit"
 # clip's effective audio can change without clip.operations itself changing
 # at all (its group's setting changed, or -- for a group-scoped metronome --
-# a sibling clip's duration shifted the beat schedule)
-RENDER_LOGIC_VERSION = 4
+# a sibling clip's duration shifted the beat schedule).
+# v4: a metronome's audio no longer gets re-stretched by the clip's speed
+# factor (see ResolvedAudio.sync_to_speed / render_clip's sync_audio_to_speed)
+# -- same clip inputs as before now render differently for a metronome clip
+# that also has a non-1.0 speed factor.
+# v5: MetronomeOp gained start_frame/end_frame windowing. Same clip inputs
+# can now render differently in one specific case: a clip combining
+# freeze_frame with a default (unset start/end) metronome no longer gets
+# beats extending into the freeze-frame padding -- a beat window is
+# inherently frame-based, and freeze padding isn't a real source frame
+# range, so the default end now lands exactly at the clip's actual last
+# frame instead of implicitly including that padding.
+RENDER_LOGIC_VERSION = 5
 
 
 class FFmpegError(RuntimeError):
     pass
+
+
+# Every image-derived source is generated at this fixed frame rate. Two
+# clips with mismatched frame rates sitting in the same export isn't
+# something concat_clips currently guards against (it only probes and
+# reconciles *dimensions*, via _probe_dims, not fps) -- standardizing here
+# sidesteps that rather than requiring a separate fps-reconciliation pass.
+IMAGE_CLIP_FPS = 30.0
+
+
+def generate_video_from_image(image_path: str, output_path: str, duration_sec: float, fps: float = IMAGE_CLIP_FPS) -> None:
+    """Turn a still image into a silent .mp4 of exactly `duration_sec`,
+    displaying the image the whole time. The result is then ingested exactly
+    like any uploaded video (probe_source, generate_proxy, ...) -- nothing
+    downstream needs to know it didn't start out as a video file."""
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        "ffmpeg", "-y", "-loop", "1", "-i", image_path,
+        "-t", f"{duration_sec:.6f}",
+        "-r", str(fps),
+        # scale ensures even width/height -- yuv420p requires both dimensions
+        # divisible by 2, which an arbitrary source image has no reason to satisfy
+        "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",
+        "-pix_fmt", "yuv420p",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
+        "-movflags", "+faststart",
+        output_path,
+    ]
+    run(cmd)
 
 
 def run(cmd: list[str]) -> str:
@@ -108,10 +149,12 @@ def generate_proxy(original_path: str, proxy_path: str, max_height: int = 480) -
 
 
 def clip_cache_key(source: SourceInfo, clip: Clip, quality: str, resolved_audio: dict) -> str:
-    """
-    Deterministic hash used to skip re-rendering unchanged clips.
-    `resolved_audio` is the fingerprint from metronome.resolve_clip_audio
-    and NOT clip_operations.audio.model_dump()
+    """Deterministic hash used to skip re-rendering unchanged clips.
+
+    `resolved_audio` is the fingerprint from metronome.resolve_clip_audio,
+    not clip.operations.audio.model_dump() -- see RENDER_LOGIC_VERSION v3
+    note above for why hashing the raw (possibly "inherit") value would miss
+    real changes to what actually gets rendered.
     """
     ops_payload = clip.operations.model_dump()
     ops_payload["audio"] = resolved_audio
@@ -195,6 +238,14 @@ def _build_audio_filters(clip: Clip, speed_factor: float, sync_to_speed: bool = 
     if ops.reverse:
         filters.append("areverse")
 
+    # sync_to_speed=False means this audio's timing has already been
+    # computed against the clip's final (post-speed) output duration -- a
+    # synthesized metronome track, specifically -- so re-stretching it here
+    # via atempo/asetrate would double-apply the speed change (a 220bpm
+    # metronome on a 0.5x clip would otherwise come out at 110bpm). The
+    # caller (main.py, via ResolvedAudio.sync_to_speed) decides this per
+    # clip based on where the audio actually came from; ordinary "original"
+    # or "replaced" audio keeps the old speed-synced behavior.
     if sync_to_speed and speed_factor != 1.0 and ops.speed.pitch_correction:
         # atempo only supports 0.5-2.0 per instance; chain multiple stages
         remaining = speed_factor
@@ -236,6 +287,11 @@ def render_clip(
     """Render a single EDL clip entry to a standalone mp4 file.
 
     quality: "proxy" uses source.proxy_path, "final" uses source.original_path.
+    sync_audio_to_speed: False for a synthesized metronome track (see
+    ResolvedAudio.sync_to_speed in metronome.py) -- its timing is already
+    computed against the clip's final post-speed duration, so it should play
+    at its own native rate rather than being stretched again by the clip's
+    speed factor.
     """
     src_path = source.proxy_path if quality == "proxy" else source.original_path
     fps = source.fps or 30.0

@@ -35,6 +35,14 @@ class SourceInfo(BaseModel):
     height: Optional[int] = None
     has_audio: bool = False
     error: Optional[str] = None
+    # "image" means this source was generated from an uploaded still image
+    # (see ffmpeg_utils.generate_video_from_image) rather than an uploaded
+    # video file -- purely informational for the UI (a badge in the source
+    # list / timeline). Once generated, an image-derived source is a real
+    # .mp4 with real fps/total_frames like any other -- nothing in the
+    # rendering pipeline (render_clip, concat_clips, metronome, ...) treats
+    # the two differently, or needs to.
+    source_kind: Literal["video", "image"] = "video"
 
 
 # ---------------------------------------------------------------------------
@@ -63,8 +71,8 @@ class FadeOp(BaseModel):
 
 class RampOp(BaseModel):
     direction: Literal["accelerate", "decelerate"] = "accelerate"
-    every_n_beats: int = 4
-    change_amount: int = 5
+    every_n_beats: int = 4  # >= 1
+    change_amount: float = 5.0  # interpreted per `change_unit`
     change_unit: Literal["bpm", "percent"] = "bpm"
     min_bpm: float = 20.0
     max_bpm: float = 300.0
@@ -72,23 +80,48 @@ class RampOp(BaseModel):
 
 class MetronomeOp(BaseModel):
     tempo_mode: Literal["bpm", "beat_count"] = "bpm"
-    bpm: float = 120.0
-    beat_count: int = 8
-    include_end_beat: bool = False
+    bpm: float = 120.0  # used directly when tempo_mode == "bpm"; the STARTING
+    # tempo (before ramping) either way -- also itself clamped to [min_bpm, max_bpm]
+    # when a ramp is present, since it's just beat 0 of the ramp sequence.
+    beat_count: int = 8  # used when tempo_mode == "beat_count": total beats
+    # spread evenly (or per the ramp) across the scope's full duration.
+    include_end_beat: bool = False  # place one extra beat exactly on the last
+    # frame of the scope (this clip, or the whole group). Never applied at an
+    # internal clip boundary within a group -- see metronome.py beat-spacing
+    # notes for why that would reintroduce the collision this feature exists
+    # to avoid.
     ramp: Optional[RampOp] = None
-    sound_asset_id: Optional[str] = None
-    start_clip_id: Optional[str] = None # None means this clip, or the group's actual first member clip
-    end_clip_id: Optional[str] = None # Same as above - means this clip, or group's actual last member clip
-    start_frame: Optional[int] = None # None means default - start of clip
-    end_frame: Optional[int] = None # same as above - means end of clip
+    sound_asset_id: Optional[str] = None  # references an uploaded audio_assets
+    # entry to use as the click sound; None means backend-synthesized click.
+    #
+    # Window: which clip range (and frame range within it) beats get placed
+    # over. Meaningful as written for a clip-level metronome, where there's
+    # only ever one clip in scope -- start_clip_id/end_clip_id are ignored
+    # there. For a group-level metronome, start_clip_id/end_clip_id let the
+    # window start and end on ANY member clip, not just the group's actual
+    # first/last -- explicitly referencing a clip id (rather than assuming
+    # "the first/last member") also means this stays correct if the group
+    # gets reordered later, since it points at a specific clip rather than a
+    # position.
+    start_clip_id: Optional[str] = None  # None = this clip (clip scope), or
+    # the group's actual first member clip (group scope)
+    start_frame: Optional[int] = None  # None = that clip's own start_frame
+    end_clip_id: Optional[str] = None  # None = this clip (clip scope), or
+    # the group's actual last member clip (group scope)
+    end_frame: Optional[int] = None  # None = that clip's own end_frame
 
 
 class AudioOp(BaseModel):
+    # "inherit" defers to the enclosing group's audio.mode (recursing through
+    # nested groups), falling back to "original" if there's no group or every
+    # ancestor is also "inherit". This is the default for newly-created clips;
+    # any other explicit mode here is treated as an override that wins over
+    # whatever the group says -- see metronome.resolve_clip_audio.
     mode: Literal["inherit", "original", "muted", "replaced", "metronome"] = "inherit"
     volume: float = 1.0  # multiplier, applied when mode == "original"
     replacement_asset_id: Optional[str] = None  # references an uploaded audio file
     replacement_start_sec: float = 0.0  # offset into replacement audio to start from
-    metronome: Optional[MetronomeOp] = None
+    metronome: Optional[MetronomeOp] = None  # used when mode == "metronome"
 
 
 class TransformOp(BaseModel):
@@ -122,7 +155,6 @@ class Clip(BaseModel):
 # -- it's the fallback a clip's "inherit" audio.mode resolves to. See
 # metronome.resolve_clip_audio for the actual resolution walk.)
 # ---------------------------------------------------------------------------
-
 
 class GroupAudioOp(BaseModel):
     mode: Literal["inherit", "original", "muted", "metronome"] = "inherit"
