@@ -1,6 +1,17 @@
 import { useRef, useState, useEffect, useCallback } from "react";
 import { timeToFrame } from "../edl";
 
+function clampCropToSource(crop, source) {
+  if(!crop || !source?.width || !source?.height) return null;
+
+  const width = Math.max(1, Math.min(crop.width || source.width, source.width));
+  const height = Math.max(1, Math.min(crop.height || source.height, source.height));
+  const x = Math.max(0, Math.min(crop.x || 0, source.width - width));
+  const y = Math.max(0, Math.min(crop.y || 0, source.height - height));
+
+  return { x, y, width, height };
+}
+
 /**
  * Frame-accurate scrubber over a source's low-res proxy video.
  *
@@ -21,7 +32,7 @@ import { timeToFrame } from "../edl";
  * a seek completes. `seeked` is used as a fallback for browsers without
  * rVFC support.
  */
-export default function FramePreview({ source, onMarkRange }) {
+export default function FramePreview({ source, clip, onMarkRange }) {
   const videoRef = useRef(null);
   const [currentFrame, setCurrentFrame] = useState(0);
   const [inFrame, setInFrame] = useState(null);
@@ -30,6 +41,14 @@ export default function FramePreview({ source, onMarkRange }) {
 
   const fps = source?.fps || 30;
   const totalFrames = source?.total_frames || 0;
+  const crop = clampCropToSource(clip?.operations?.transform?.crop, source);
+  const hasCropOverlay = !!crop && source?.width && source?.height;
+  const overlayPath = hasCropOverlay
+    ? [
+        `M0 0H${source.width}V${source.height}H0Z`,
+        `M${crop.x} ${crop.y}H${crop.x + crop.width}V${crop.y + crop.height}H${crop.x}Z`,
+      ].join(" ")
+    : null;
 
   const seekToFrame = useCallback(
     (frame) => {
@@ -108,17 +127,43 @@ export default function FramePreview({ source, onMarkRange }) {
 
   return (
     <div className="frame-preview">
-      <video
-        ref={videoRef}
-        src={source._proxyUrl}
-        onLoadedMetadata={handleLoadedMetadata}
-        onTimeUpdate={handleTimeUpdate}
-        onSeeked={handleSeeked}
-        className="preview-video"
-        playsInline
-      />
+      <div className="preview-stage">
+        <video
+          ref={videoRef}
+          src={source._proxyUrl}
+          onLoadedMetadata={handleLoadedMetadata}
+          onTimeUpdate={handleTimeUpdate}
+          onSeeked={handleSeeked}
+          className="preview-video"
+          playsInline
+        />
+        {hasCropOverlay && (
+          <svg
+            className="crop-overlay"
+            viewBox={`0 0 ${source.width} ${source.height}`}
+            aria-hidden="true"
+          >
+            <path d={overlayPath} fill="rgba(48, 133, 255, 0.28)" fillRule="evenodd" />
+            <rect 
+              x={crop.x}
+              y={crop.y}
+              width={crop.width}
+              height={crop.height}
+              fill="transparent"
+              stroke="rgba(255, 255, 255, 0.95)"
+              strokeWidth={Math.max(source.width, source.height) / 350}
+            />
+          </svg>
+        )}
+      </div>
 
       {!ready && <div className="dim">Loading video...</div>}
+
+      { hasCropOverlay && (
+        <div className="crop-readout mono dim">
+          Crop keeps {crop.width} x {crop.height} at ({crop.x}, {crop.y}) within {source.width} x {source.height}
+        </div>
+      )}
 
       <div className="frame-readout">
         Frame <span className="mono">{currentFrame}</span> / {totalFrames - 1}

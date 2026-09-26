@@ -184,8 +184,12 @@ export default function App() {
   };
 
   const handleSelectClip = (clipId) => {
+    const clip = project?.clips.find((c) => c.id === clipId) || null;
     setSelectedClipId(clipId);
     setSelectedGroupId(null);
+    if (clip?.source_id) {
+      setSelectedSourceId(clip.source_id);
+    }
   };
 
   const handleSelectGroup = (groupId) => {
@@ -194,6 +198,7 @@ export default function App() {
   };
 
   const selectedClip = project ? project.clips.find((c) => c.id === selectedClipId) : null;
+  const previewClip = selectedClip && selectedClip.source_id === selectedSourceId ? selectedClip : null;
   const selectedGroup = project && selectedGroupId ? project.groups?.[selectedGroupId] || null : null;
   const selectedGroupMembers = (() => {
     if (!project || !selectedGroupId) return null;
@@ -328,7 +333,7 @@ export default function App() {
         </div>
 
         <div className="col col-center">
-          <FramePreview source={sourceWithProxyUrl} onMarkRange={handleMarkRange} />
+          <FramePreview source={sourceWithProxyUrl} clip={previewClip} onMarkRange={handleMarkRange} />
           <WipPlayer
             project={project}
             selectedClipId={selectedClipId}

@@ -46,6 +46,21 @@ export default function ClipEditor({ clip, source, onChange }) {
     update({ freeze_frame: enabled ? { position: "end", duration_sec: 1.0 } : null });
   };
 
+  const clampCrop = (crop) => {
+    const maxWidth = Math.max(source?.width || 640, 1);
+    const maxHeight = Math.max(source?.height || 360, 1);
+    const width = Math.max(1, Math.min(parseInt(crop.width, 10) || maxWidth, maxWidth));
+    const height = Math.max(1, Math.min(parseInt(crop.height, 10) || maxHeight, maxHeight));
+    const x = Math.max(0, Math.min(parseInt(crop.x, 10) || 0, maxWidth - width));
+    const y = Math.max(0, Math.min(parseInt(crop.y, 10) || 0, maxHeight - height));
+    return { x, y, width, height };
+  };
+
+  const updateCrop = (patch) => {
+    const nextCrop = clampCrop({ ...ops.transform.crop, ...patch });
+    updateTransform({ crop: nextCrop });
+  };
+
   const toggleCrop = (enabled) => {
     updateTransform({ crop: enabled ? { x: 0, y: 0, width: 640, height: 360 } : null });
   };
@@ -448,11 +463,10 @@ export default function ClipEditor({ clip, source, onChange }) {
                 {k}
                 <input
                   type="number"
-                  min="0"
+                  min={k === "width" || k === "height" ? "1" : "0"}
+                  max={k === "x" || k === "width" ? source?.width || undefined : source?.height || undefined}
                   value={ops.transform.crop[k]}
-                  onChange={(e) =>
-                    updateTransform({ crop: { ...ops.transform.crop, [k]: parseInt(e.target.value) || 0 } })
-                  }
+                  onChange={(e) => updateCrop({ [k]: parseInt(e.target.value, 10) || 0 })}
                 />
               </label>
             ))}
