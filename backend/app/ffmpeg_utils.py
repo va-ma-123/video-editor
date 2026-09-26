@@ -46,7 +46,7 @@ from .models import Clip, SourceInfo
 # inherently frame-based, and freeze padding isn't a real source frame
 # range, so the default end now lands exactly at the clip's actual last
 # frame instead of implicitly including that padding.
-RENDER_LOGIC_VERSION = 5
+RENDER_LOGIC_VERSION = 6
 
 
 class FFmpegError(RuntimeError):
@@ -59,6 +59,29 @@ class FFmpegError(RuntimeError):
 # reconciles *dimensions*, via _probe_dims, not fps) -- standardizing here
 # sidesteps that rather than requiring a separate fps-reconciliation pass.
 IMAGE_CLIP_FPS = 30.0
+
+def _proxy_dimensions(source: SourceInfo, max_height: int = 480) -> tuple[int, int]:
+    if not source.width or not source.height:
+        return 0, 0
+
+    proxy_height = min(max_height, source.height)
+    scale = proxy_height / source.height
+    proxy_width = max(1, int(round((source.width * scale) / 2.0) * 2))
+    return proxy_width, proxy_height
+
+def _scale_crop_for_proxy(crop: dict[str, int], source: SourceInfo) -> dict[str, int]:
+    proxy_width, proxy_height = _proxy_dimensions(source)
+    if not proxy_width or not proxy_height or not source.width or not source.height:
+        return crop
+
+    scale_x = proxy_width / source.width
+    scale_y = proxy_height / source.height
+
+    width = max(1, min(int(round(crop["width"] * scale_x)), proxy_width))
+    height = max(1, min(int(round(crop["height"] * scale_y)), proxy_height))
+    x = max(0, min(int(round(crop["x"] * scale_x)), proxy_width - width))
+    y = max(0, min(int(round(crop["y"] * scale_y)), proxy_height - height))
+    return {"x": x, "y": y, "width": width, "height": height}
 
 
 def generate_video_from_image(image_path: str, output_path: str, duration_sec: float, fps: float = IMAGE_CLIP_FPS) -> None:
@@ -305,11 +328,26 @@ def render_clip(
     # Approximate output duration after speed + freeze, used to place fade-out correctly
     output_duration = (trim_duration / speed_factor) + freeze_extra
 
-    video_filters = _build_video_filters(clip, fps)
-    audio_filters = _build_audio_filters(clip, speed_factor, sync_to_speed=sync_audio_to_speed)
+    effective_clip = clip
+    if quality == "proxy" and clip.operations.transform.crop:
+        scaled_crop = _scale_crop_for_proxy(clip.operations.transform.crop, source)
+        effective_clip = clip.model_copy(
+            update={
+                "operations": clip.operations.model_copy(
+                    update={
+                        "transform": clip.operations.transform.model_copy(
+                            update={"crop": scaled_crop}
+                        )
+                    }
+                )
+            }
+        )
+
+    video_filters = _build_video_filters(effective_clip, fps)
+    audio_filters = _build_audio_filters(effective_clip, speed_factor, sync_to_speed=sync_audio_to_speed)
 
     # Resolve fade-out placeholders now that we know output_duration
-    fade_out_d = clip.operations.fade.fade_out.duration_sec
+    fade_out_d = effective_clip.operations.fade.fade_out.duration_sec
     if fade_out_d > 0:
         st = max(output_duration - fade_out_d, 0)
         video_filters = [
