@@ -402,6 +402,16 @@ input[type="text"], input[type="number"], select {
 .crop-handle.s { left: 50%; top: 100%; cursor: ns-resize; }
 .crop-handle.sw { left: 0; top: 100%; cursor: nesw-resize; }
 .crop-handle.w { left: 0; top: 50%; cursor: ew-resize; }
+.crop-readout-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.crop-reset-button {
+  flex-shrink: 0;
+  padding: 4px 8px;
+}
 .crop-readout { font-size: 12px; }
 .frame-readout { font-size: 13px; }
 .scrub-bar { width: 100%; }
@@ -426,6 +436,7 @@ input[type="text"], input[type="number"], select {
 .field-label.small { display: inline-block; width: 70px; margin-right: 6px; }
 .sub-fields { margin-left: 4px; padding-left: 8px; border-left: 2px solid var(--border); }
 .crop-fields { display: flex; gap: 4px; }
+.crop-meta { margin-top: 6px; font-size: 12px; }
 
 /* WIP + export */
 .wip-player, .export-panel {

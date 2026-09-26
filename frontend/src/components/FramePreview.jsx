@@ -309,6 +309,20 @@ export default function FramePreview({ source, clip, onMarkRange, onCropChange }
     setCurrentFrame(timeToFrame(video.currentTime, fps));
   };
 
+  const resetCrop = () => {
+    if (!clip || !onCropChange || !source?.width || !source?.height) return;
+    onCropChange({
+      ...clip,
+      operations: {
+        ...clip.operations,
+        transform: {
+          ...clip.operations.transform,
+          crop: { x:0, y: 0, width: source.width, height: source.height },
+        },
+      },
+    });
+  };
+
   if (!source) {
     return <div className="frame-preview empty">Upload a video to start scrubbing frames.</div>;
   }
@@ -405,8 +419,13 @@ export default function FramePreview({ source, clip, onMarkRange, onCropChange }
       {!ready && <div className="dim">Loading video...</div>}
 
       { hasCropOverlay && (
-        <div className="crop-readout mono dim">
-          Crop keeps {crop.width}x{crop.height} at ({crop.x}, {crop.y}) in source space
+        <div className="crop-readout-row">
+          <div className="crop-readout mono dim">
+            Crop keeps {crop.width}x{crop.height} at ({crop.x}, {crop.y}) in source space
+          </div>
+          <button type="button" onClick={resetCrop} className="crop-reset-button">
+            Reset Crop
+          </button>
         </div>
       )}
 

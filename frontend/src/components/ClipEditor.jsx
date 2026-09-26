@@ -457,19 +457,24 @@ export default function ClipEditor({ clip, source, onChange }) {
           Crop
         </label>
         {ops.transform.crop && (
-          <div className="sub-fields crop-fields">
-            {["x", "y", "width", "height"].map((k) => (
-              <label key={k} className="field-label small">
-                {k}
-                <input
-                  type="number"
-                  min={k === "width" || k === "height" ? "1" : "0"}
-                  max={k === "x" || k === "width" ? source?.width || undefined : source?.height || undefined}
-                  value={ops.transform.crop[k]}
-                  onChange={(e) => updateCrop({ [k]: parseInt(e.target.value, 10) || 0 })}
-                />
-              </label>
-            ))}
+          <div className="sub-fields">
+            <div className=" crop-fields">
+              {["x", "y", "width", "height"].map((k) => (
+                <label key={k} className="field-label small">
+                  {k}
+                  <input
+                    type="number"
+                    min={k === "width" || k === "height" ? "1" : "0"}
+                    max={k === "x" || k === "width" ? source?.width || undefined : source?.height || undefined}
+                    value={ops.transform.crop[k]}
+                    onChange={(e) => updateCrop({ [k]: parseInt(e.target.value, 10) || 0 })}
+                  />
+                </label>
+              ))}
+            </div>
+            <div className="crop-meta dim mono">
+              Source pixels ⋅ max {source?.width ?? "-"}x{source?.height ?? "-"}
+            </div>
           </div>
         )}
       </section>
