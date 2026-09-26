@@ -333,7 +333,12 @@ export default function App() {
         </div>
 
         <div className="col col-center">
-          <FramePreview source={sourceWithProxyUrl} clip={previewClip} onMarkRange={handleMarkRange} />
+          <FramePreview 
+            source={sourceWithProxyUrl} 
+            clip={previewClip} 
+            onMarkRange={handleMarkRange}
+            onCropChange={handleClipEdit} 
+          />
           <WipPlayer
             project={project}
             selectedClipId={selectedClipId}

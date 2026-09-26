@@ -32,23 +32,152 @@ function clampCropToSource(crop, source) {
  * a seek completes. `seeked` is used as a fallback for browsers without
  * rVFC support.
  */
-export default function FramePreview({ source, clip, onMarkRange }) {
+function clampPreviewCrop(crop, previewSize) {
+  if(!crop || !previewSize?.width || !previewSize?.height) return null;
+
+  const minSize = 8;
+  const width = Math.max(minSize, Math.min(crop.width || previewSize.width, previewSize.width));
+  const height = Math.max(minSize, Math.min(crop.height || previewSize.height, previewSize.height));
+  const x = Math.max(0, Math.min(crop.x || 0, previewSize.width - width));
+  const y = Math.max(0, Math.min(crop.y || 0, previewSize.height - height));
+
+  return { x, y, width, height };
+}
+
+function resizeAxis(start, end, delta, edge, minSize) {
+  if (!edge) return [start, end];
+  if (edge === "move") return [start + delta, end + delta];
+  if (edge === "start") return [Math.min(end - minSize, start + delta), end];
+  return [start, Math.max(start + minSize, end + delta)];
+}
+
+function previewCropToSourceCrop(crop, source, previewSize) {
+  if(!crop || !previewSize?.width || !previewSize?.height || !source?.height || !source?.width) return null;
+  const scaleX = source.width / previewSize.width;
+  const scaleY = source.height / previewSize.height;
+  return {
+    x: Math.max(0, Math.min(Math.round(crop.x * scaleX), source.width - 1)),
+    y: Math.max(0, Math.min(Math.round(crop.y * scaleY), source.height - 1)),
+    width: Math.max(1, Math.min(Math.round(crop.width * scaleX), source.width)),
+    height: Math.max(1, Math.min(Math.round(crop.height * scaleY), source.height)),
+  };
+}
+
+function sourceCropToPreviewCrop(crop, source, previewSize) {
+  if(!crop || !previewSize?.width || !previewSize?.height || !source?.height || !source?.width) return null;
+  const scaleX = previewSize.width / source.width;
+  const scaleY = previewSize.height / source.height;
+  return {
+    x: crop.x * scaleX,
+    y: crop.y * scaleY,
+    width: crop.width * scaleX,
+    height: crop.height * scaleY,
+  };
+}
+
+function resizePreviewCrop(startCrop, dragMode, dx, dy, previewSize) {
+  const minSize = 8;
+  let horizontalEdge = null;
+  let verticalEdge = null;
+
+  if(dragMode === "move") {
+    horizontalEdge = "move";
+    verticalEdge = "move";
+  } else {
+    if(dragMode.includes("w")) horizontalEdge = "start"
+    else if (dragMode.includes("e")) horizontalEdge = "end"
+
+    if (dragMode.includes("n")) verticalEdge = "start"
+    else if (dragMode.includes("s")) verticalEdge = "end"
+  }
+
+  const [l, r] = resizeAxis(startCrop.x, startCrop.x + startCrop.width, dx, horizontalEdge, minSize);
+  const [t, b] = resizeAxis(startCrop.y, startCrop.y + startCrop.height, dy, verticalEdge, minSize);
+
+  return clampPreviewCrop({ x: l, y: t, width: r-l, height: b-t }, previewSize);
+}
+
+export default function FramePreview({ source, clip, onMarkRange, onCropChange }) {
   const videoRef = useRef(null);
+  const dragStateRef = useRef(null);
   const [currentFrame, setCurrentFrame] = useState(0);
   const [inFrame, setInFrame] = useState(null);
   const [outFrame, setOutFrame] = useState(null);
   const [ready, setReady] = useState(false);
+  const [previewSize, setPreviewSize] = useState(null);
 
   const fps = source?.fps || 30;
   const totalFrames = source?.total_frames || 0;
   const crop = clampCropToSource(clip?.operations?.transform?.crop, source);
-  const hasCropOverlay = !!crop && source?.width && source?.height;
-  const overlayPath = hasCropOverlay
-    ? [
-        `M0 0H${source.width}V${source.height}H0Z`,
-        `M${crop.x} ${crop.y}H${crop.x + crop.width}V${crop.y + crop.height}H${crop.x}Z`,
-      ].join(" ")
-    : null;
+  const cropPreview = sourceCropToPreviewCrop(crop, source, previewSize);
+  const hasCropOverlay = !!cropPreview && !!previewSize;
+  
+  const syncPreviewSize = useCallback(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    const rect = video.getBoundingClientRect();
+    if (rect.width > 0 && rect.height > 0) {
+      setPreviewSize((current) => {
+        const next = { width: rect.width, height: rect.height };
+        if (current && current.width === next.width && current.height === next.height) return current;
+        return next;
+      });
+    }
+  }, []);
+
+  const commitPreviewCrop = useCallback(
+    (previewCrop) => {
+      if (!onCropChange || !source || !previewSize) return;
+      const clampedPreviewCrop = clampPreviewCrop(previewCrop, previewSize);
+      const nextCrop = previewCropToSourceCrop(clampedPreviewCrop, source, previewSize);
+      if (nextCrop) onCropChange({ ...clip, operations: { ...clip.operations, transform: { ...clip.operations.transform, crop: nextCrop } } });
+    },
+    [clip, onCropChange, previewSize, source]
+  );
+
+  const handlePointerMove = useCallback(
+    (event) => {
+      const drag = dragStateRef.current;
+      if (!drag || event.pointerId !== drag.pointerId) return;
+      event.preventDefault();
+      const dx = event.clientX - drag.startPoint.x;
+      const dy = event.clientY - drag.startPoint.y;
+      const nextCrop = clampPreviewCrop(resizePreviewCrop(drag.startCrop, drag.mode, dx, dy, previewSize), previewSize);
+      if (nextCrop) commitPreviewCrop(nextCrop);
+    },
+    [commitPreviewCrop, previewSize]
+  );
+
+  const stopDragging = useCallback(
+    (event) => {
+      const drag = dragStateRef.current;
+      if (!drag || (event?.pointerId && event.pointerId !== drag.pointerId)) return;
+      dragStateRef.current = null;
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", stopDragging);
+      window.removeEventListener("pointercancel", stopDragging);
+    },
+    [handlePointerMove]
+  );
+
+  const startDragging = useCallback(
+    (mode) => (event) => {
+      if(!cropPreview || !previewSize || !onCropChange) return;
+      event.preventDefault();
+      event.stopPropagation();
+      dragStateRef.current = {
+        mode,
+        pointerId: event.pointerId,
+        startPoint: { x: event.clientX, y: event.clientY },
+        startCrop: cropPreview,
+      };
+      window.addEventListener("pointermove", handlePointerMove);
+      window.addEventListener("pointerup", stopDragging);
+      window.addEventListener("pointercancel", stopDragging);
+      event.currentTarget.setPointerCapture?.(event.pointerId);
+    },
+    [cropPreview, handlePointerMove, onCropChange, previewSize, stopDragging]
+  );
 
   const seekToFrame = useCallback(
     (frame) => {
@@ -79,9 +208,32 @@ export default function FramePreview({ source, clip, onMarkRange }) {
     setInFrame(null);
     setOutFrame(null);
     setReady(false);
+    setPreviewSize(null);
   }, [source?.id]);
 
-  const handleLoadedMetadata = () => setReady(true);
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return undefined;
+
+    syncPreviewSize();
+    if (typeof ResizeObserver === "undefined") {
+      window.addEventListener("resize", syncPreviewSize);
+      return () => window.removeEventListener("resize", syncPreviewSize);
+    }
+
+    const observer = new ResizeObserver(() => syncPreviewSize());
+    observer.observe(video);
+    window.addEventListener("resize", syncPreviewSize);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", syncPreviewSize);
+    };
+  }, [syncPreviewSize, source?.id]);
+
+  const handleLoadedMetadata = () => {
+    syncPreviewSize();
+    setReady(true);
+  }
 
   const handleSeeked = () => {
     // Fallback authoritative sync for browsers without requestVideoFrameCallback.
@@ -136,24 +288,64 @@ export default function FramePreview({ source, clip, onMarkRange }) {
           onSeeked={handleSeeked}
           className="preview-video"
           playsInline
-        />
-        {hasCropOverlay && (
-          <svg
-            className="crop-overlay"
-            viewBox={`0 0 ${source.width} ${source.height}`}
-            aria-hidden="true"
-          >
-            <path d={overlayPath} fill="rgba(48, 133, 255, 0.28)" fillRule="evenodd" />
-            <rect 
-              x={crop.x}
-              y={crop.y}
-              width={crop.width}
-              height={crop.height}
-              fill="transparent"
-              stroke="rgba(255, 255, 255, 0.95)"
-              strokeWidth={Math.max(source.width, source.height) / 350}
+        >
+          <track kind="captions" label="Captions" srcLang="en" src={null} />
+        </video>
+        {hasCropOverlay && previewSize && (
+          <div className="crop-overlay" aria-hidden="true">
+            <div className="crop-mask crop-mask-top" style={{ height: `${cropPreview.y}px` }} />
+            <div 
+              className="crop-mask crop-mask-left"
+              style={{ 
+                top: `${cropPreview.y}px`, 
+                width: `${cropPreview.x}px`, 
+                height: `${cropPreview.height}px` 
+              }}
             />
-          </svg>
+            <div 
+              className="crop-mask crop-mask-right"
+              style={{ 
+                top: `${cropPreview.y}px`, 
+                left: `${cropPreview.x + cropPreview.width}px`, 
+                height: `${cropPreview.height}px` 
+              }}
+            />
+            <div 
+              className="crop-mask crop-mask-bottom"
+              style={{ 
+                top: `${cropPreview.y + cropPreview.height}px`
+              }}
+            />
+            <div
+              className="crop-box"
+              style={{
+                left: `${cropPreview.x}px`,
+                top: `${cropPreview.y}px`,
+                width: `${cropPreview.width}px`,
+                height: `${cropPreview.height}px`,
+              }}
+              onPointerDown={startDragging("move")}
+            >
+              {[
+                ["nw", "crop-handle nw"],
+                ["n", "crop-handle n"],
+                ["ne", "crop-handle ne"],
+                ["e", "crop-handle e"],
+                ["se", "crop-handle se"],
+                ["s", "crop-handle s"],
+                ["sw", "crop-handle sw"],
+                ["w", "crop-handle w"],
+              ].map(([mode, className]) => (
+                <button 
+                  key={mode}
+                  type="button"
+                  className={className}
+                  onPointerDown={startDragging(mode)}
+                  aria-label={`Resize crop ${mode}`}
+                />
+              ))}
+            </div>
+          </div>
         )}
       </div>
 
@@ -161,7 +353,7 @@ export default function FramePreview({ source, clip, onMarkRange }) {
 
       { hasCropOverlay && (
         <div className="crop-readout mono dim">
-          Crop keeps {crop.width} x {crop.height} at ({crop.x}, {crop.y}) within {source.width} x {source.height}
+          Crop keeps {Math.round(cropPreview.width)} x {Math.round(cropPreview.height)} at ({Math.round(cropPreview.x)}, {Math.round(cropPreview.y)}) in preview space.
         </div>
       )}
 
