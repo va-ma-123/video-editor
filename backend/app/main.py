@@ -426,7 +426,6 @@ def _render_segments(project: Project, clips: list[Clip], quality: str, name_pre
         boundaries.append({"clip_id": segment["clips"][0].id, "start_sec": cursor, "end_sec": cursor + duration})
         cursor += duration
 
-    print("rendered_paths: ", rendered_paths, "boundaries: ", boundaries)
     return rendered_paths, boundaries
 
 @app.post("/api/projects/{project_id}/render-wip")
@@ -474,8 +473,6 @@ def render_group_preview(project_id: str, group_id: str):
         raise HTTPException(400, "Group has no clips")
 
     rendered_paths, boundaries = _render_segments(project, group_clips, quality="proxy", name_prefix=f"group_{group_id}")
-
-    print("group_preview, rendered_paths = ", rendered_paths, "boundaries: ", boundaries)
 
     preview_path = storage.EXPORTS_DIR / f"group_preview_{group_id}.mp4"
     if len(rendered_paths) == 1:
