@@ -6,7 +6,28 @@ import { defaultGroupOperations, defaultMetronome, defaultRamp } from "../edl";
 // trim/speed/freeze/transform/fade all stay per-clip -- so this editor is
 // deliberately much smaller than ClipEditor, not a re-skin of it.
 function clampSplit(raw) {
-  return Math.max(0.1, Math.min(raw, 0.9));
+  return Math.max(0.1, Math.min(Number(raw) || 0.5, 0.9));
+}
+
+const DEFAULT_QUADRANTS = ["a", "b", "a", "b"];
+
+function getCompositeState(video) {
+  const legacySplit = clampSplit(video.split ?? 0.5);
+  const splitX = clampSplit(
+    video.split_x ?? (video.layout === "horizontal_split" ? 0.5 : legacySplit)
+  );
+  const splitY = clampSplit(
+    video.split_y ?? (video.layout === "horizontal_split" ? legacySplit : 0.5)
+  );
+
+  let quadrants = Array.isArray(video.quadrants) ? video.quadrants : null;
+  if (!quadrants || quadrants.length !== 4 || quadrants.some((value) => value !== "a" && value !== "b")) {
+    quadrants = video.layout === "horizontal_split"
+      ? ["a", "a", "b", "b"]
+      : DEFAULT_QUADRANTS;
+  }
+
+  return { splitX, splitY, quadrants };
 }
 
 function compositeEligibility(group, directClips, hasNestedGroups) {
@@ -42,6 +63,8 @@ export default function GroupEditor({ group, memberClips, directMemberClips, has
   const updateMetronome = (patch) => updateAudio({ metronome: { ...metronome, ...patch } });
   const updateRamp = (patch) => updateMetronome({ ramp: { ...(metronome.ramp || defaultRamp()), ...patch } });
 
+  const { splitX, splitY, quadrants } = getCompositeState(video);
+
   const handleModeChange = (mode) => {
     // Seed a fresh metronome config the first time this group switches into
     // metronome mode; once it exists, leave it in place across mode
@@ -72,17 +95,25 @@ export default function GroupEditor({ group, memberClips, directMemberClips, has
 
   const disableComposite = () => updateVideo({ mode: "sequential" });
 
-  const startDividerDrag = (event) => {
-    const rect = event.currentTarget.parentElement.getBoundingClientRect();
-    const layout = video.layout;
+  const startDividerDrag = (axis, event) => {
+    event.preventDefault();
+    const preview = event.currentTarget.parentElement;
+    const rect = preview.getBoundingClientRect();
 
     const handlePointerMove = (moveEvent) => {
-      const ratio = layout === "vertical_split"
-        ? (moveEvent.clientX - rect.left) / rect.width
-        : (moveEvent.clientY - rect.top) / rect.height;
-      updateVideo({ split: clampSplit(ratio) });
-    }
-    
+      if (axis === "x") {
+        const ratio = (moveEvent.clientX - rect.left) / rect.width;
+        updateVideo({ split_x: clampSplit(ratio) });
+      } else if (axis === "y") {
+        const ratio = (moveEvent.clientY - rect.top) / rect.height;
+        updateVideo({ split_y: clampSplit(ratio) });
+      } else {
+        const x = (moveEvent.clientX - rect.left) / rect.width;
+        const y = (moveEvent.clientY - rect.top) / rect.height;
+        updateVideo({ split_x: clampSplit(x), split_y: clampSplit(y) });
+      }
+    };
+
     const stopDragging = () => {
       window.removeEventListener("pointermove", handlePointerMove);
       window.removeEventListener("pointerup", stopDragging);
@@ -92,7 +123,12 @@ export default function GroupEditor({ group, memberClips, directMemberClips, has
     window.addEventListener("pointermove", handlePointerMove);
     window.addEventListener("pointerup", stopDragging);
     window.addEventListener("pointercancel", stopDragging);
-    event.currentTarget.setPointerCapture?.(event.pointerId);
+  };
+
+  const toggleQuadrant = (index) => {
+    const next = [...quadrants];
+    next[index] = next[index] === "a" ? "b" : "a";
+    updateVideo({ quadrants: next });
   };
 
   const handleSoundUpload = async (e) => {
@@ -133,45 +169,87 @@ export default function GroupEditor({ group, memberClips, directMemberClips, has
 
         {video.mode === "composite" && compositeEligible && (
           <div className="composite-editor">
-            <div className="row composite-layout-row">
-              <button
-                type="button"
-                className={video.layout === "vertical_split" ? "primary" : ""}
-                onClick={() => updateVideo({ layout: "vertical_split" })}
-              >
-                Left / right
-              </button>
-              <button
-                type="button"
-                className={video.layout === "horizontal_split" ? "primary" : ""}
-                onClick={() => updateVideo({ layout: "horizontal_split" })}
-              >
-                Top / bottom
-              </button>
-            </div>
+            <div className="composite-preview">
+              {[
+                { index: 0, label: "top-left", x: 0, y: 0 },
+                { index: 1, label: "top-right", x: 1, y: 0 },
+                { index: 2, label: "bottom-left", x: 0, y: 1 },
+                { index: 3, label: "bottom-right", x: 1, y: 1 },
+              ].map(({ index, label, x, y }) => {
+                const isA = quadrants[index] === "a";
+                const left = x === 0 ? 0 : splitX * 100;
+                const top = y === 0 ? 0 : splitY * 100;
+                const width = (x === 0 ? splitX : 1 - splitX) * 100;
+                const height = (y === 0 ? splitY : 1 - splitY) * 100;
 
-            <div className={`composite-preview ${video.layout}`}>
-              <div
-                className="composite-pane composite-pane-a"
-                style={video.layout === "vertical_split" ? { width: `${video.split * 100}%` } : { height: `${video.split * 100}%` }}
-              >
-                <div className="composite-pane-label">{directClips[0]?.filename || "Clip 1"}</div>
-              </div>
-              <div
-                className="composite-pane composite-pane-b"
-                style={video.layout === "vertical_split" ? { width: `${(1 - video.split) * 100}%` } : { height: `${(1 - video.split) * 100}%` }}
-              >
-                <div className="composite-pane-label">{directClips[1]?.filename || "Clip 2"}</div>
-              </div>
+                return (
+                  <button
+                    key={label}
+                    type="button"
+                    className={`composite-quadrant ${isA ? "source-a" : "source-b"}`}
+                    style={{ left: `${left}%`, top: `${top}%`, width: `${width}%`, height: `${height}%` }}
+                    onClick={() => toggleQuadrant(index)}
+                    aria-label={`${label}: ${isA ? "Clip 1" : "Clip 2"}. Click to switch source.`}
+                  >
+                    <span className="composite-pane-label">
+                      {isA ? (directClips[0]?.filename || "Clip 1") : (directClips[1]?.filename || "Clip 2")}
+                    </span>
+                  </button>
+                );
+              })}
+
               <button
                 type="button"
-                className={`composite-divider ${video.layout}`}
-                style={video.layout === "vertical_split" ? { left: `${video.split * 100}%` } : { top: `${video.split * 100}%` }}
-                onPointerDown={startDividerDrag}
-                aria-label="Adjust split"
+                className="composite-divider vertical_split"
+                style={{ left: `${splitX * 100}%` }}
+                onPointerDown={(event) => startDividerDrag("x", event)}
+                aria-label="Adjust vertical divider"
+              />
+              <button
+                type="button"
+                className="composite-divider horizontal_split"
+                style={{ top: `${splitY * 100}%` }}
+                onPointerDown={(event) => startDividerDrag("y", event)}
+                aria-label="Adjust horizontal divider"
+              />
+              <button
+                type="button"
+                className="composite-intersection"
+                style={{ left: `${splitX * 100}%`, top: `${splitY * 100}%` }}
+                onPointerDown={(event) => startDividerDrag("both", event)}
+                aria-label="Move both dividers"
               />
             </div>
-            <div className="dim mono">Shortest clip wins duration. Drag the divider to rebalance the split.</div>
+
+            <div className="row composite-controls">
+              <label className="field-label small">
+                X
+                <input
+                  type="number"
+                  min="10"
+                  max="90"
+                  step="1"
+                  value={Math.round(splitX * 100)}
+                  onChange={(e) => updateVideo({ split_x: clampSplit(Number(e.target.value) / 100) })}
+                />
+              </label>
+              <label className="field-label small">
+                Y
+                <input
+                  type="number"
+                  min="10"
+                  max="90"
+                  step="1"
+                  value={Math.round(splitY * 100)}
+                  onChange={(e) => updateVideo({ split_y: clampSplit(Number(e.target.value) / 100) })}
+                />
+              </label>
+            </div>
+
+            <div className="dim mono">
+              Click a quadrant to switch between Clip 1 and Clip 2. Drag the vertical or horizontal divider to
+              reposition it, or drag the center handle to move both at once.
+            </div>
           </div>
         )}
       </section>

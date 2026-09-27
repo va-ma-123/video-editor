@@ -165,6 +165,10 @@ class GroupVideoOp(BaseModel):
     layout: Literal["vertical_split", "horizontal_split"] = "vertical_split"
     split: float = 0.5
 
+    split_x: Optional[float] = None
+    split_y: Optional[float] = None
+    quadrants: Optional[List[Literal["a", "b"]]] = None
+
 class GroupOperations(BaseModel):
     audio: GroupAudioOp = Field(default_factory=GroupAudioOp)
     video: GroupVideoOp = Field(default_factory=GroupVideoOp)

@@ -46,7 +46,7 @@ from .models import Clip, SourceInfo
 # inherently frame-based, and freeze padding isn't a real source frame
 # range, so the default end now lands exactly at the clip's actual last
 # frame instead of implicitly including that padding.
-RENDER_LOGIC_VERSION = 6
+RENDER_LOGIC_VERSION = 7
 
 
 class FFmpegError(RuntimeError):
@@ -411,43 +411,124 @@ def _probe_dims(path: str) -> tuple[int, int]:
     w, h = out.strip().split(",")
     return int(w), int(h)
 
-def compose_clips(rendered_paths: list[str], output_path: str, layout: str, split: float, duration: float, quality: str) -> None:
+
+def _probe_fps(path: str) -> float:
+    out = run([
+        "ffprobe", "-v", "error", "-select_streams", "v:0",
+        "-show_entries", "stream=r_frame_rate", "-of", "default=noprint_wrappers=1:nokey=1", path,
+    ])
+    value = out.strip()
+    if "/" in value:
+        num, den = value.split("/", 1)
+        return float(num) / float(den)
+    return float(value)
+
+def compose_clips(
+    rendered_paths: list[str],
+    output_path: str,
+    split_x: float,
+    split_y: float,
+    quadrants: list[str],
+    duration: float,
+    quality: str,
+) -> None:
+    """Compose two clips through a movable 2D split.
+
+    `split_x` and `split_y` define a vertical and horizontal boundary on one
+    shared output canvas. `quadrants` is ordered as:
+
+        [top-left, top-right, bottom-left, bottom-right]
+
+    with each value being "a" for rendered_paths[0] or "b" for
+    rendered_paths[1].
+
+    IMPORTANT: each source is first scaled to the FULL output canvas and then
+    cropped into its assigned quadrant. This means a quadrant shows the
+    corresponding part of the source frame rather than restarting the source
+    at (0, 0) independently inside every quadrant. For example, with A/B/B/A:
+
+        A's top-left      B's top-right
+        B's bottom-left   A's bottom-right
+
+    all four regions are windows into the original full frames.
+    """
     if len(rendered_paths) != 2:
         raise FFmpegError("compose_clips requires exactly two rendered paths")
+    if len(quadrants) != 4 or any(value not in ("a", "b") for value in quadrants):
+        raise FFmpegError("compose_clips quadrants must contain exactly four 'a'/'b' values")
 
     dims = [_probe_dims(path) for path in rendered_paths]
+    output_fps = _probe_fps(rendered_paths[0])
     target_w = max(w for w, _h in dims)
     target_h = max(h for _w, h in dims)
-    target_w += target_w % 2
-    target_h += target_h % 2
+    # yuv420p requires even dimensions.
+    target_w = max(4, target_w + target_w % 2)
+    target_h = max(4, target_h + target_h % 2)
 
-    split = max(0.1, min(split, 0.9))
-    if layout == "vertical_split":
-        left_w = max(2, min(int(round(target_w * split)), target_w - 2))
-        left_w -= left_w % 2
-        right_w = target_w - left_w
-        scale_a = f"scale={left_w}:{target_h}:force_original_aspect_ratio=increase,crop={left_w}:{target_h}:0:0"
-        scale_b = f"scale={right_w}:{target_h}:force_original_aspect_ratio=increase,crop={right_w}:{target_h}:iw-{right_w}:0"
-        overlay_b = f"overlay={left_w}:0"
-    else:
-        top_h = max(2, min(int(round(target_h * split)), target_h - 2))
-        top_h -= top_h % 2
-        bottom_h = target_h - top_h 
-        scale_a = f"scale={target_w}:{top_h}:force_original_aspect_ratio=increase,crop={target_w}:{top_h}:0:0"
-        scale_b = f"scale={target_w}:{bottom_h}:force_original_aspect_ratio=increase,crop={target_w}:{bottom_h}:0:ih-{bottom_h}"
-        overlay_b = f"overlay=0:{top_h}"
+    split_x = max(0.1, min(float(split_x), 0.9))
+    split_y = max(0.1, min(float(split_y), 0.9))
+
+    left_w = max(2, min(int(round(target_w * split_x)), target_w - 2))
+    left_w -= left_w % 2
+    right_w = target_w - left_w
+
+    top_h = max(2, min(int(round(target_h * split_y)), target_h - 2))
+    top_h -= top_h % 2
+    bottom_h = target_h - top_h
+
+    cells = [
+        (0, 0, left_w, top_h),
+        (left_w, 0, right_w, top_h),
+        (0, top_h, left_w, bottom_h),
+        (left_w, top_h, right_w, bottom_h),
+    ]
 
     cmd = ["ffmpeg", "-y", "-i", rendered_paths[0], "-i", rendered_paths[1]]
     filter_complex = [
-        f"color=c=black:s={target_w}x{target_h}:d={duration:.6f}[base]",
-        f"[0:v]{scale_a}[va]",
-        f"[1:v]{scale_b}[vb]",
-        "[base][va]overlay=0:0[tmp]",
-        f"[tmp][vb]{overlay_b}[vout]",
-        "[0:a][1:a]amix=inputs=2:duration=shortest:normalize=0[aout]",
+        f"color=c=black:s={target_w}x{target_h}:r={output_fps:.6f}:d={duration:.6f}[base]",
+        # Each source is prepared ONCE at the full output-canvas size. The
+        # branches below then crop windows out of that same full frame.
+        f"[0:v]scale={target_w}:{target_h}:force_original_aspect_ratio=increase,"
+        f"crop={target_w}:{target_h}:(iw-{target_w})/2:(ih-{target_h})/2,split=4[a0][a1][a2][a3]",
+        f"[1:v]scale={target_w}:{target_h}:force_original_aspect_ratio=increase,"
+        f"crop={target_w}:{target_h}:(iw-{target_w})/2:(ih-{target_h})/2,split=4[b0][b1][b2][b3]",
     ]
 
-    cmd += ["-filter_complex", ";".join(filter_complex), "-map", "[vout]", "-map", "[aout]", "-t", f"{duration:.6f}"]
+    cell_labels = []
+    used_branches = {"a": set(), "b": set()}
+    for index, (x, y, width, height) in enumerate(cells):
+        source = quadrants[index]
+        used_branches[source].add(index)
+        source_label = f"[{source}{index}]"
+        cell_label = f"[cell{index}]"
+        filter_complex.append(
+            f"{source_label}crop={width}:{height}:{x}:{y}{cell_label}"
+        )
+        cell_labels.append(cell_label)
+
+    # Every output of split=4 must be consumed. A source may occupy one to
+    # four quadrants, so send unused branches to nullsink.
+    for source in ("a", "b"):
+        for index in range(4):
+            if index not in used_branches[source]:
+                filter_complex.append(f"[{source}{index}]nullsink")
+
+    current = "[base]"
+    for index, (x, y, _width, _height) in enumerate(cells):
+        next_label = "[vout]" if index == len(cells) - 1 else f"[comp{index}]"
+        filter_complex.append(
+            f"{current}{cell_labels[index]}overlay={x}:{y}:shortest=1{next_label}"
+        )
+        current = next_label
+
+    filter_complex.append("[0:a][1:a]amix=inputs=2:duration=shortest:normalize=0[aout]")
+
+    cmd += [
+        "-filter_complex", ";".join(filter_complex),
+        "-map", "[vout]",
+        "-map", "[aout]",
+        "-t", f"{duration:.6f}",
+    ]
     if quality == "proxy":
         cmd += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "26"]
     else:
@@ -490,8 +571,8 @@ def concat_clips(rendered_paths: list[str], output_path: str) -> None:
     target_w = max(w for w, h in dims)
     target_h = max(h for w, h in dims)
     # Ensure even dimensions (required by yuv420p)
-    target_w += target_w % 2
-    target_h += target_h % 2
+    target_w = max(4, target_w + target_w % 2)
+    target_h = max(4, target_h + target_h % 2)
 
     inputs = []
     filter_parts = []

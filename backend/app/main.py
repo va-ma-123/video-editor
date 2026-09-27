@@ -368,6 +368,35 @@ def _group_layout(group) -> str:
 def _group_split(group) -> float:
     return getattr(getattr(group.operations, "video", None), "split", 0.5)
 
+def _group_split_x(group) -> float:
+    video = getattr(group.operations, "video", None)
+    value = getattr(video, "split_x", None)
+    if value is None:
+        # Legacy vertical split maps directly to X. A legacy horizontal split
+        # has no vertical divider, so its X boundary defaults to the middle.
+        return _group_split(group) if _group_layout(group) == "vertical_split" else 0.5
+    return max(0.1, min(float(value), 0.9))
+
+def _group_split_y(group) -> float:
+    video = getattr(group.operations, "video", None)
+    value = getattr(video, "split_y", None)
+    if value is None:
+        # Legacy horizontal split maps directly to Y. A legacy vertical split
+        # has no horizontal divider, so its Y boundary defaults to the middle.
+        return _group_split(group) if _group_layout(group) == "horizontal_split" else 0.5
+    return max(0.1, min(float(value), 0.9))
+
+def _group_quadrants(group) -> list[str]:
+    video = getattr(group.operations, "video", None)
+    raw = getattr(video, "quadrants", None)
+    if isinstance(raw, list) and len(raw) == 4 and all(value in ("a", "b") for value in raw):
+        return raw
+
+    # Legacy layouts: A/B vertically or horizontally.
+    if _group_layout(group) == "horizontal_split":
+        return ["a", "a", "b", "b"]
+    return ["a", "b", "a", "b"]
+
 def _is_valid_composite_group(project: Project, group_id: str) -> bool:
     group = project.groups.get(group_id)
     if not group or _group_video_mode(group) != "composite":
@@ -391,8 +420,9 @@ def _build_render_segments(project: Project, clips: list[Clip]) -> list[dict]:
                     "type": "composite",
                     "group_id": group_id,
                     "clips": direct_members,
-                    "layout": _group_layout(group),
-                    "split": _group_split(group),
+                    "split_x": _group_split_x(group),
+                    "split_y": _group_split_y(group),
+                    "quadrants": _group_quadrants(group),
                 })
                 i += len(direct_members)
                 continue
@@ -421,7 +451,7 @@ def _render_segments(project: Project, clips: list[Clip], quality: str, name_pre
         duration = min(member_durations)
         suffix = "final_" if quality == "final" else "proxy_"
         composite_path = storage.CACHE_DIR / f"{suffix}{name_prefix}_{segment['group_id']}_{index}.mp4"
-        ffmpeg_utils.compose_clips(member_paths, str(composite_path), segment["layout"], segment["split"], duration, quality)
+        ffmpeg_utils.compose_clips(member_paths, str(composite_path), segment["split_x"], segment["split_y"], segment["quadrants"], duration, quality)
         rendered_paths.append(str(composite_path))
         boundaries.append({"clip_id": segment["clips"][0].id, "start_sec": cursor, "end_sec": cursor + duration})
         cursor += duration
@@ -573,7 +603,7 @@ def _run_export_job(job_id: str, project_id: str):
                 member_durations = [ffmpeg_utils.probe_duration(path) for path in member_paths]
                 duration = min(member_durations)
                 composite_path = storage.CACHE_DIR / f"final_export_{job_id}_{index}.mp4"
-                ffmpeg_utils.compose_clips(member_paths, str(composite_path), segment["layout"], segment["split"], duration, "final")
+                ffmpeg_utils.compose_clips(member_paths, str(composite_path), segment["split_x"], segment["split_y"], segment["quadrants"], duration, "final")
                 rendered_paths.append(str(composite_path))
                 job.ready_clip_paths.append(f"/media/cache/{composite_path.name}")
 

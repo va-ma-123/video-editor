@@ -41,7 +41,16 @@ export function defaultRamp() {
 export function defaultGroupOperations() {
   return {
     audio: { mode: "inherit", metronome: null },
-    video: { mode: "sequential", layout: "vertical_split", split: 0.5},
+    video: {
+      mode: "sequential",
+      // Legacy fields are retained for compatibility with older projects.
+      layout: "vertical_split",
+      split: 0.5,
+      // 2D composite layout.
+      split_x: 0.5,
+      split_y: 0.5,
+      quadrants: ["a", "b", "a", "b"],
+    },
   };
 }
 
