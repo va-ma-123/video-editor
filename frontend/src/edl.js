@@ -38,10 +38,10 @@ export function defaultRamp() {
 }
 
 // Mirrors backend/app/models.py GroupOperations -- keep in sync.
-// Groups only carry an audio block for now for group-wide muting and metronome
 export function defaultGroupOperations() {
   return {
     audio: { mode: "inherit", metronome: null },
+    video: { mode: "sequential", layout: "vertical_split", split: 0.5},
   };
 }
 

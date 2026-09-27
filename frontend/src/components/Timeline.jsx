@@ -252,6 +252,7 @@ export default function Timeline({ project, selectedClipId, selectedGroupId, pla
     // Older projects saved before group-level operations existed won't have
     // this field yet -- treat that the same as an explicit "inherit".
     const groupAudioMode = group.operations?.audio?.mode || "inherit";
+    const groupVideoMode = group.operations?.video?.mode || "sequential";
 
     return (
       <div key={group.id}>
@@ -275,6 +276,9 @@ export default function Timeline({ project, selectedClipId, selectedGroupId, pla
           <div className="group-info">
             <span className="group-name">{containsPlaying ? "▶" : "📁"} {group.name}</span>
             <span className="dim mono"> ({clipCount} clip{clipCount === 1 ? "" : "s"})</span>
+            {groupVideoMode === "composite" && (
+              <span className="clip-badges"><span className="badge">composite</span></span>
+            )}
             {groupAudioMode !== "inherit" && (
               <span className="clip-badges"><span className="badge">{groupAudioMode}</span></span>
             )}

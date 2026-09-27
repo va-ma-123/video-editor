@@ -31,3 +31,9 @@ def clips_in_group(project: Project, group_id: str) -> list[Clip]:
         if group_id in chain:
             result.append(clip)
     return result
+
+def direct_clips_in_group(project: Project, group_id: str) -> list[Clip]:
+    return [clip for clip in project.clips if clip.group_id == group_id]
+
+def child_groups(project: Project, group_id: str) -> list[str]:
+    return [group.id for group in project.groups.values() if group.parent_group_id == group_id]

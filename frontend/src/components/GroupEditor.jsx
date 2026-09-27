@@ -5,7 +5,24 @@ import { defaultGroupOperations, defaultMetronome, defaultRamp } from "../edl";
 // Group-level counterpart to ClipEditor. Groups only carry an audio block --
 // trim/speed/freeze/transform/fade all stay per-clip -- so this editor is
 // deliberately much smaller than ClipEditor, not a re-skin of it.
-export default function GroupEditor({ group, memberClips, onChange }) {
+function clampSplit(raw) {
+  return Math.max(0.1, Math.min(raw, 0.9));
+}
+
+function compositeEligibility(group, directClips, hasNestedGroups) {
+  if (group.parent_group_id) {
+    return { eligible: false, reason: "Composite groups can't be nested inside another group." };
+  }
+  if (hasNestedGroups) {
+    return { eligible: false, reason: "Composite groups can't contain nested groups." };
+  }
+  if (directClips.length !== 2) {
+    return { eligible: false, reason: "Composite groups need exactly 2 direct clips." };
+  }
+  return { eligible: true, reason: null };
+}
+
+export default function GroupEditor({ group, memberClips, directMemberClips, hasNestedGroups, onChange }) {
   const [soundUploadStatus, setSoundUploadStatus] = useState("");
 
   if (!group) {
@@ -15,9 +32,13 @@ export default function GroupEditor({ group, memberClips, onChange }) {
   // Tolerate groups saved before group-level operations existed.
   const ops = group.operations || defaultGroupOperations();
   const metronome = ops.audio.metronome || defaultMetronome();
+  const video = ops.video || defaultGroupOperations().video;
+  const directClips = directMemberClips || [];
+  const { eligible: compositeEligible, reason: compositeReason } = compositeEligibility(group, directClips, hasNestedGroups);
 
   const update = (patch) => onChange({ ...group, operations: { ...ops, ...patch } });
   const updateAudio = (patch) => update({ audio: { ...ops.audio, ...patch } });
+  const updateVideo = (patch) => update({ video: { ...video, ...patch } });
   const updateMetronome = (patch) => updateAudio({ metronome: { ...metronome, ...patch } });
   const updateRamp = (patch) => updateMetronome({ ramp: { ...(metronome.ramp || defaultRamp()), ...patch } });
 
@@ -44,6 +65,36 @@ export default function GroupEditor({ group, memberClips, onChange }) {
 
   const toggleRamp = (enabled) => updateMetronome({ ramp: enabled ? defaultRamp() : null });
 
+  const enableComposite = () => {
+    if(!compositeEligible) return;
+    updateVideo({ mode: "composite" });
+  }
+
+  const disableComposite = () => updateVideo({ mode: "sequential" });
+
+  const startDividerDrag = (event) => {
+    const rect = event.currentTarget.parentElement.getBoundingClientRect();
+    const layout = video.layout;
+
+    const handlePointerMove = (moveEvent) => {
+      const ratio = layout === "vertical_split"
+        ? (moveEvent.clientX - rect.left) / rect.width
+        : (moveEvent.clientY - rect.top) / rect.height;
+      updateVideo({ split: clampSplit(ratio) });
+    }
+    
+    const stopDragging = () => {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", stopDragging);
+      window.removeEventListener("pointercancel", stopDragging);
+    };
+
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", stopDragging);
+    window.addEventListener("pointercancel", stopDragging);
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+  };
+
   const handleSoundUpload = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -60,9 +111,72 @@ export default function GroupEditor({ group, memberClips, onChange }) {
   return (
     <div className="clip-editor">
       <h3>{group.name}</h3>
-      <div className="dim mono">Group audio</div>
-
+      <div className="dim mono">Group settings</div>
+      
       <section>
+        <h4>Playback</h4>
+        <div className="row composite-mode-row">
+          <button 
+            type="button" 
+            className={video.mode === "composite" ? "primary" : ""}
+            onClick={enableComposite}
+            disabled={!compositeEligible}
+            title={compositeReason || "Render these 2 clips side-by-side"}
+          >
+            Play side-by-side
+          </button>
+          {video.mode === "composite" && (
+            <button type="button" onClick={disableComposite}>Back to sequential</button>
+          )}
+        </div>
+        {compositeReason && <div className="dim">{compositeReason}</div>}
+
+        {video.mode === "composite" && compositeEligible && (
+          <div className="composite-editor">
+            <div className="row composite-layout-row">
+              <button
+                type="button"
+                className={video.layout === "vertical_split" ? "primary" : ""}
+                onClick={() => updateVideo({ layout: "vertical_split" })}
+              >
+                Left / right
+              </button>
+              <button
+                type="button"
+                className={video.layout === "horizontal_split" ? "primary" : ""}
+                onClick={() => updateVideo({ layout: "horizontal_split" })}
+              >
+                Top / bottom
+              </button>
+            </div>
+
+            <div className={`composite-preview ${video.layout}`}>
+              <div
+                className="composite-pane composite-pane-a"
+                style={video.layout === "vertical_split" ? { width: `${video.split * 100}%` } : { height: `${video.split * 100}%` }}
+              >
+                <div className="composite-pane-label">{directClips[0]?.filename || "Clip 1"}</div>
+              </div>
+              <div
+                className="composite-pane composite-pane-b"
+                style={video.layout === "vertical_split" ? { width: `${(1 - video.split) * 100}%` } : { height: `${(1 - video.split) * 100}%` }}
+              >
+                <div className="composite-pane-label">{directClips[1]?.filename || "Clip 2"}</div>
+              </div>
+              <button
+                type="button"
+                className={`composite-divider ${video.layout}`}
+                style={video.layout === "vertical_split" ? { left: `${video.split * 100}%` } : { top: `${video.split * 100}%` }}
+                onPointerDown={startDividerDrag}
+                aria-label="Adjust split"
+              />
+            </div>
+            <div className="dim mono">Shortest clip wins duration. Drag the divider to rebalance the split.</div>
+          </div>
+        )}
+      </section>
+      <section>
+        <h4>Audio</h4>
         <label className="field-label">
           Mode:
           <select value={ops.audio.mode} onChange={(e) => handleModeChange(e.target.value)}>

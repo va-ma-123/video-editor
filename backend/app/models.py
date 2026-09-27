@@ -160,9 +160,14 @@ class GroupAudioOp(BaseModel):
     mode: Literal["inherit", "original", "muted", "metronome"] = "inherit"
     metronome: Optional[MetronomeOp] = None
 
+class GroupVideoOp(BaseModel):
+    mode: Literal["sequential", "composite"] = "sequential"
+    layout: Literal["vertical_split", "horizontal_split"] = "vertical_split"
+    split: float = 0.5
 
 class GroupOperations(BaseModel):
     audio: GroupAudioOp = Field(default_factory=GroupAudioOp)
+    video: GroupVideoOp = Field(default_factory=GroupVideoOp)
 
 
 class Group(BaseModel):

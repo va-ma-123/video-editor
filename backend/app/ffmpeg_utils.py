@@ -411,6 +411,50 @@ def _probe_dims(path: str) -> tuple[int, int]:
     w, h = out.strip().split(",")
     return int(w), int(h)
 
+def compose_clips(rendered_paths: list[str], output_path: str, layout: str, split: float, duration: float, quality: str) -> None:
+    if len(rendered_paths) != 2:
+        raise FFmpegError("compose_clips requires exactly two rendered paths")
+
+    dims = [_probe_dims(path) for path in rendered_paths]
+    target_w = max(w for w, _h in dims)
+    target_h = max(h for _w, h in dims)
+    target_w += target_w % 2
+    target_h += target_h % 2
+
+    split = max(0.1, min(split, 0.9))
+    if layout == "vertical_split":
+        left_w = max(2, min(int(round(target_w * split)), target_w - 2))
+        left_w -= left_w % 2
+        right_w = target_w - left_w
+        scale_a = f"scale={left_w}:{target_h}:force_original_aspect_ratio=increase,crop={left_w}:{target_h}:0:0"
+        scale_b = f"scale={right_w}:{target_h}:force_original_aspect_ratio=increase,crop={right_w}:{target_h}:iw-{right_w}:0"
+        overlay_b = f"overlay={left_w}:0"
+    else:
+        top_h = max(2, min(int(round(target_h * split)), target_h - 2))
+        top_h -= top_h % 2
+        bottom_h = target_h - top_h 
+        scale_a = f"scale={target_w}:{top_h}:force_original_aspect_ratio=increase,crop={target_w}:{top_h}:0:0"
+        scale_b = f"scale={target_w}:{bottom_h}:force_original_aspect_ratio=increase,crop={target_w}:{bottom_h}:0:ih-{bottom_h}"
+        overlay_b = f"overlay=0:{top_h}"
+
+    cmd = ["ffmpeg", "-y", "-i", rendered_paths[0], "-i", rendered_paths[1]]
+    filter_complex = [
+        f"color=c=black:s={target_w}x{target_h}:d={duration:.6f}[base]",
+        f"[0:v]{scale_a}[va]",
+        f"[1:v]{scale_b}[vb]",
+        "[base][va]overlay=0:0[tmp]",
+        f"[tmp][vb]{overlay_b}[vout]",
+        "[0:a][1:a]amix=inputs=2:duration=shortest:normalize=0[aout]",
+    ]
+
+    cmd += ["-filter_complex", ";".join(filter_complex), "-map", "[vout]", "-map", "[aout]", "-t", f"{duration:.6f}"]
+    if quality == "proxy":
+        cmd += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "26"]
+    else:
+        cmd += ["-c:v", "libx264", "-preset", "medium", "-crf", "18"]
+
+    cmd += ["-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", output_path]
+    run(cmd)
 
 def concat_clips(rendered_paths: list[str], output_path: str) -> None:
     """Concatenate already-rendered clip files.

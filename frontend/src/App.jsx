@@ -11,6 +11,39 @@ import WipPlayer from "./components/WipPlayer";
 import ExportPanel from "./components/ExportPanel";
 import "./app.css";
 
+function sanitizeCompositeGroups(clips, groups) {
+  const directClipCounts = {};
+  clips.forEach((clip) => {
+    if (!clip.group_id) return;
+    directClipCounts[clip.group_id] = (directClipCounts[clip.group_id] || 0) + 1;
+  });
+
+  const childGroupCounts = {};
+  Object.values(groups || {}).forEach((group) => {
+    if (!group.parent_group_id) return;
+    childGroupCounts[group.parent_group_id] = (childGroupCounts[group.parent_group_id] || 0) + 1;
+  })
+
+  let changed = false;
+  const nextGroups = { ...groups };
+  Object.values(groups || {}).forEach((group) => {
+    const videoOps = group.operations?.video;
+    if (videoOps?.mode !== "composite") return;
+    const valid = !group.parent_group_id && !childGroupCounts[group.id] && (directClipCounts[group.id] || 0) === 2;
+    if (valid) return;
+    changed = true;
+    nextGroups[group.id] = {
+      ...group,
+      operations: {
+        ...group.operations,
+        video: { ...videoOps, mode: "sequential" },
+      },
+    };
+  });
+
+  return changed ? nextGroups : groups;
+}
+
 export default function App() {
   const [project, setProject] = useState(null);
   const [projectList, setProjectList] = useState([]);
@@ -180,7 +213,8 @@ export default function App() {
     if (selectedGroupId && !updated.groups?.[selectedGroupId]) {
       setSelectedGroupId(null);
     }
-    saveProject(updated);
+    const groups = sanitizeCompositeGroups(updated.clips, updated.groups || {});
+    saveProject({ ...updated, groups });
   };
 
   const handleSelectClip = (clipId) => {
@@ -213,8 +247,13 @@ export default function App() {
       index: i,
       startFrame: c.start_frame,
       endFrame: c.end_frame,
+      sourceId: c.source_id,
+      filename: project.sources[c.source_id]?.filename || c.source_id,
+      direct: c.group_id === selectedGroupId,
     }));
   })();
+  const selectedGroupDirectMembers = selectedGroupMembers?.filter((member) => member.direct) || [];
+  const selectedGroupHasNestedGroups = !!(project && selectedGroupId && Object.values(project.groups || {}).some((group) => group.parent_group_id === selectedGroupId));
 
   const handleClipEdit = (updatedClip) => {
     const clips = project.clips.map((c) => (c.id === updatedClip.id ? updatedClip : c));
@@ -254,7 +293,7 @@ export default function App() {
       });
     }
 
-    saveProject({ ...project, clips, groups });
+    saveProject({ ...project, clips, groups: sanitizeCompositeGroups(clips, groups) });
   };
 
   if (!project) {
@@ -351,7 +390,13 @@ export default function App() {
 
         <div className="col col-right">
           {selectedGroupId ? (
-            <GroupEditor group={selectedGroup} memberClips={selectedGroupMembers} onChange={handleGroupEdit} />
+            <GroupEditor 
+              group={selectedGroup} 
+              memberClips={selectedGroupMembers} 
+              directMemberClips={selectedGroupDirectMembers}
+              hasNestedGroups={selectedGroupHasNestedGroups}
+              onChange={handleGroupEdit} 
+            />
           ) : (
             <ClipEditor
               clip={selectedClip}

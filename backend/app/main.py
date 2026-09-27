@@ -12,7 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, FileResponse
 
 from . import storage, ffmpeg_utils, metronome
-from .groups_util import group_ancestor_chain, clips_in_group
+from .groups_util import child_groups, direct_clips_in_group, group_ancestor_chain, clips_in_group
 from .models import Project, SourceInfo, Clip, ExportJob, new_id
 
 print(">>> main.py loaded, marker: TEST12345 <<<")
@@ -359,6 +359,75 @@ def _build_clip_boundaries(clips: list[Clip], rendered_paths: list[str]) -> list
         cursor += duration
     return boundaries
 
+def _group_video_mode(group) -> str:
+    return getattr(getattr(group.operations, "video", None), "mode", "sequential")
+
+def _group_layout(group) -> str:
+    return getattr(getattr(group.operations, "video", None), "layout", "vertical_split")
+
+def _group_split(group) -> float:
+    return getattr(getattr(group.operations, "video", None), "split", 0.5)
+
+def _is_valid_composite_group(project: Project, group_id: str) -> bool:
+    group = project.groups.get(group_id)
+    if not group or _group_video_mode(group) != "composite":
+        return False
+    if group.parent_group_id or child_groups(project, group_id):
+        return False
+    return len(direct_clips_in_group(project, group_id)) == 2
+
+def _build_render_segments(project: Project, clips: list[Clip]) -> list[dict]:
+    subset_ids = {clip.id for clip in clips}
+    segments = []
+    i=0
+    while i<len(clips):
+        clip = clips[i]
+        group_id = clip.group_id
+        if group_id and _is_valid_composite_group(project, group_id):
+            direct_members = direct_clips_in_group(project, group_id)
+            if direct_members[0].id == clip.id and all(member.id in subset_ids for member in direct_members):
+                group = project.groups[group_id]
+                segments.append({
+                    "type": "composite",
+                    "group_id": group_id,
+                    "clips": direct_members,
+                    "layout": _group_layout(group),
+                    "split": _group_split(group),
+                })
+                i += len(direct_members)
+                continue
+        segments.append({"type": "clip", "clips": [clip]})
+        i += 1
+    return segments
+
+def _render_segments(project: Project, clips: list[Clip], quality: str, name_prefix: str) -> tuple[list[str], list[dict]]:
+    segments = _build_render_segments(project, clips)
+    rendered_paths = []
+    boundaries = []
+    cursor = 0.0
+
+    for index, segment in enumerate(segments):
+        if segment["type"] == "clip":
+            clip = segment["clips"][0]
+            path = str(_ensure_clip_rendered(project, clip, quality=quality))
+            duration = ffmpeg_utils.probe_duration(path)
+            rendered_paths.append(path)
+            boundaries.append({"clip_id": clip.id, "start_sec": cursor, "end_sec": cursor + duration})
+            cursor += duration
+            continue
+
+        member_paths = [str(_ensure_clip_rendered(project, member, quality=quality)) for member in segment["clips"]]
+        member_durations = [ffmpeg_utils.probe_duration(path) for path in member_paths]
+        duration = min(member_durations)
+        suffix = "final_" if quality == "final" else "proxy_"
+        composite_path = storage.CACHE_DIR / f"{suffix}{name_prefix}_{segment['group_id']}_{index}.mp4"
+        ffmpeg_utils.compose_clips(member_paths, str(composite_path), segment["layout"], segment["split"], duration, quality)
+        rendered_paths.append(str(composite_path))
+        boundaries.append({"clip_id": segment["clips"][0].id, "start_sec": cursor, "end_sec": cursor + duration})
+        cursor += duration
+
+    print("rendered_paths: ", rendered_paths, "boundaries: ", boundaries)
+    return rendered_paths, boundaries
 
 @app.post("/api/projects/{project_id}/render-wip")
 def render_wip(project_id: str):
@@ -366,7 +435,7 @@ def render_wip(project_id: str):
     if not project.clips:
         raise HTTPException(400, "No clips in project")
 
-    rendered_paths = [str(_ensure_clip_rendered(project, clip, quality="proxy")) for clip in project.clips]
+    rendered_paths, boundaries = _render_segments(project, project.clips, quality="proxy", name_prefix=f"wip_{project.id}")
 
     if len(rendered_paths) == 1:
         wip_path = storage.EXPORTS_DIR / f"wip_{project_id}.mp4"
@@ -375,7 +444,6 @@ def render_wip(project_id: str):
         wip_path = storage.EXPORTS_DIR / f"wip_{project_id}.mp4"
         ffmpeg_utils.concat_clips(rendered_paths, str(wip_path))
 
-    boundaries = _build_clip_boundaries(project.clips, rendered_paths)
     return {"url": f"/media/exports/{wip_path.name}", "cache_bust": wip_path.stat().st_mtime, "clip_boundaries": boundaries}
 
 
@@ -405,7 +473,9 @@ def render_group_preview(project_id: str, group_id: str):
     if not group_clips:
         raise HTTPException(400, "Group has no clips")
 
-    rendered_paths = [str(_ensure_clip_rendered(project, clip, quality="proxy")) for clip in group_clips]
+    rendered_paths, boundaries = _render_segments(project, group_clips, quality="proxy", name_prefix=f"group_{group_id}")
+
+    print("group_preview, rendered_paths = ", rendered_paths, "boundaries: ", boundaries)
 
     preview_path = storage.EXPORTS_DIR / f"group_preview_{group_id}.mp4"
     if len(rendered_paths) == 1:
@@ -413,8 +483,11 @@ def render_group_preview(project_id: str, group_id: str):
     else:
         ffmpeg_utils.concat_clips(rendered_paths, str(preview_path))
 
-    return {"url": f"/media/exports/{preview_path.name}", "cache_bust": preview_path.stat().st_mtime,
-            "clip_boundaries": _build_clip_boundaries(group_clips, rendered_paths)}
+    return {
+        "url": f"/media/exports/{preview_path.name}", 
+        "cache_bust": preview_path.stat().st_mtime,
+        "clip_boundaries": boundaries,
+    }
 
 
 def _clips_from_clip(project: Project, clip_id: str) -> list[Clip]:
@@ -441,16 +514,18 @@ def _render_continuation(project: Project, clips: list[Clip]):
     if not clips:
         raise HTTPException(404, "No clips to render")
 
-    rendered_paths = [str(_ensure_clip_rendered(project, clip, quality="proxy")) for clip in clips]
+    rendered_paths, boundaries = _render_segments(project, clips, quality="proxy", name_prefix=f"continuation_{project.id}")
     continuation_path = storage.EXPORTS_DIR / f"continuation_{project.id}.mp4"
 
     if len(rendered_paths) == 1:
         shutil.copyfile(rendered_paths[0], continuation_path)
     else:
         ffmpeg_utils.concat_clips(rendered_paths, str(continuation_path))
-
-    return {"url": f"/media/exports/{continuation_path.name}", "cache_bust": continuation_path.stat().st_mtime,
-            "clip_boundaries": _build_clip_boundaries(clips, rendered_paths)}
+    return {
+        "url": f"/media/exports/{continuation_path.name}", 
+        "cache_bust": continuation_path.stat().st_mtime,
+        "clip_boundaries": boundaries,
+    }
 
 
 @app.post("/api/projects/{project_id}/clips/{clip_id}/render-cont")
@@ -486,15 +561,26 @@ def _run_export_job(job_id: str, project_id: str):
     job = EXPORT_JOBS[job_id]
     try:
         project = storage.load_project(project_id)
+        segments = _build_render_segments(project, project.clips)
         job.status = "rendering"
-        job.total_clips = len(project.clips)
+        job.total_clips = len(segments)
 
         rendered_paths = []
-        for clip in project.clips:
-            cache_path = _ensure_clip_rendered(project, clip, quality="final")
-            rendered_paths.append(str(cache_path))
+        for index, segment in enumerate(segments):
+            if segment["type"] == "clip":
+                cache_path = _ensure_clip_rendered(project, segment["clips"][0], quality="final")
+                rendered_paths.append(str(cache_path))
+                job.ready_clip_paths.append(f"/media/cache/{cache_path.name}")
+            else:
+                member_paths = [str(_ensure_clip_rendered(project, member, quality="final")) for member in segment["clips"]]
+                member_durations = [ffmpeg_utils.probe_duration(path) for path in member_paths]
+                duration = min(member_durations)
+                composite_path = storage.CACHE_DIR / f"final_export_{job_id}_{index}.mp4"
+                ffmpeg_utils.compose_clips(member_paths, str(composite_path), segment["layout"], segment["split"], duration, "final")
+                rendered_paths.append(str(composite_path))
+                job.ready_clip_paths.append(f"/media/cache/{composite_path.name}")
+
             job.completed_clips += 1
-            job.ready_clip_paths.append(f"/media/cache/{cache_path.name}")
 
         job.status = "concatenating"
         output_path = storage.EXPORTS_DIR / f"export_{job_id}.mp4"
