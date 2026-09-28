@@ -97,7 +97,7 @@ function resizePreviewCrop(startCrop, dragMode, dx, dy, previewSize) {
   return clampPreviewCrop({ x: l, y: t, width: r-l, height: b-t }, previewSize);
 }
 
-export default function FramePreview({ source, clip, onMarkRange, onCropChange }) {
+export default function FramePreview({ source, clip, onMarkRange, onCropChange, visible = true, onClose }) {
   const videoRef = useRef(null);
   const stageRef = useRef(null);
   const dragStateRef = useRef(null);
@@ -335,8 +335,22 @@ export default function FramePreview({ source, clip, onMarkRange, onCropChange }
     );
   }
 
+  if (!visible) return null;
+
   return (
     <div className="frame-preview">
+      <div className="frame-preview-header">
+        <span className="frame-preview-title">Frame Preview</span>
+        {onClose && (
+          <button
+            type="button"
+            onClick={onClose}
+            title="Hide this frame preview"
+          >
+            ✕ Close preview
+          </button>
+        )}
+      </div>
       <div ref={stageRef} className="preview-stage">
         <video
           ref={videoRef}

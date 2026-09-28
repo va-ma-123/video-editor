@@ -51,6 +51,8 @@ export default function App() {
   const [selectedClipId, setSelectedClipId] = useState(null);
   const [selectedGroupId, setSelectedGroupId] = useState(null);
   const [playingClipId, setPlayingClipId] = useState(null);
+  const [showFramePreview1, setShowFramePreview1] = useState(true);
+  const [showFramePreview2, setShowFramePreview2] = useState(true);
   const [error, setError] = useState(null);
   const [editingName, setEditingName] = useState(false);
   const [nameDraft, setNameDraft] = useState("");
@@ -372,12 +374,45 @@ export default function App() {
         </div>
 
         <div className="col col-center">
-          <FramePreview 
-            source={sourceWithProxyUrl} 
-            clip={previewClip} 
-            onMarkRange={handleMarkRange}
-            onCropChange={handleClipEdit} 
-          />
+          <div className="frame-preview-toggle-row">
+            <span className="dim">Frame previews:</span>
+            <button
+              type="button"
+              onClick={() => setShowFramePreview1(true)}
+              disabled={showFramePreview1}
+              title="Show frame preview 1"
+            >
+              Show Preview 1
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowFramePreview2(true)}
+              disabled={showFramePreview2}
+              title="Show frame preview 2"
+            >
+              Show Preview 2
+            </button>
+          </div>
+          {showFramePreview1 && (
+            <FramePreview 
+              source={sourceWithProxyUrl} 
+              clip={previewClip} 
+              onMarkRange={handleMarkRange}
+              onCropChange={handleClipEdit}
+              visible={showFramePreview1}
+              onClose={() => setShowFramePreview1(false)}
+            />
+          )}
+          {showFramePreview2 && (
+            <FramePreview 
+              source={sourceWithProxyUrl} 
+              clip={previewClip} 
+              onMarkRange={handleMarkRange}
+              onCropChange={handleClipEdit}
+              visible={showFramePreview2}
+              onClose={() => setShowFramePreview2(false)}
+            />
+          )}
           <WipPlayer
             project={project}
             selectedClipId={selectedClipId}

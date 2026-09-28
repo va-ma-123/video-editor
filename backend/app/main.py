@@ -548,6 +548,7 @@ def _render_continuation(project: Project, clips: list[Clip]):
         shutil.copyfile(rendered_paths[0], continuation_path)
     else:
         ffmpeg_utils.concat_clips(rendered_paths, str(continuation_path))
+        
     return {
         "url": f"/media/exports/{continuation_path.name}", 
         "cache_bust": continuation_path.stat().st_mtime,
