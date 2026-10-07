@@ -78,6 +78,16 @@ export default function ClipEditor({ clip, source, onChange }) {
     update({ freeze_frame: enabled ? { position: "end", duration_sec: 1.0 } : null });
   };
 
+  const handleReverseToggle = (enabled) => {
+    update({
+      reverse: enabled,
+      audio: {
+        ...ops.audio,
+        reverse: enabled ? ops.audio.reverse ?? false : true,
+      },
+    });
+  };
+
   const clampCrop = (crop) => {
     const width = Math.max(1, Math.min(Number.parseInt(crop?.width, 10) || sourceWidth, sourceWidth));
     const height = Math.max(1, Math.min(Number.parseInt(crop.height, 10) || sourceHeight, sourceHeight));
@@ -224,9 +234,19 @@ export default function ClipEditor({ clip, source, onChange }) {
 
       <section>
         <label className="row">
-          <input type="checkbox" checked={ops.reverse} onChange={(e) => update({ reverse: e.target.checked })} />
+          <input type="checkbox" checked={ops.reverse} onChange={(e) => handleReverseToggle(e.target.checked)} />
           Reverse
         </label>
+        {ops.reverse && (
+          <label className="row" style={{ marginLeft: "1.25rem" }}>
+              <input 
+                type="checkbox" 
+                checked={ops.audio.reverse ?? true}
+                onChange={(e) => updateAudio({ reverse: e.target.checked })}
+              />
+              Reverse audio with clip
+            </label>
+        )}
       </section>
 
       <section>

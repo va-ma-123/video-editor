@@ -6,7 +6,7 @@ export function defaultOperations() {
     freeze_frame: null,
     transform: { crop: null, crop_transition: null, rotate: 0, flip: null },
     fade: { fade_in: { duration_sec: 0 }, fade_out: { duration_sec: 0 } },
-    audio: { mode: "inherit", volume: 1.0, replacement_asset_id: null, replacement_start_sec: 0, metronome: null },
+    audio: { mode: "inherit", reverse: false, volume: 1.0, replacement_asset_id: null, replacement_start_sec: 0, metronome: null },
   };
 }
 

@@ -344,7 +344,10 @@ def _build_audio_filters(clip: Clip, speed_factor: float, sync_to_speed: bool = 
     if ops.audio.mode == "muted":
         return ["volume=0"]
 
-    if ops.reverse:
+    should_reverse_audio = ops.reverse and ops.audio.reverse and not (
+        ops.audio.mode == "replaced" and ops.audio.metronome is not None
+    )
+    if should_reverse_audio:
         filters.append("areverse")
 
     # sync_to_speed=False means this audio's timing has already been

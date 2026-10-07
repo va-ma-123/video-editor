@@ -118,6 +118,7 @@ class AudioOp(BaseModel):
     # any other explicit mode here is treated as an override that wins over
     # whatever the group says -- see metronome.resolve_clip_audio.
     mode: Literal["inherit", "original", "muted", "replaced", "metronome"] = "inherit"
+    reverse: bool = False
     volume: float = 1.0  # multiplier, applied when mode == "original"
     replacement_asset_id: Optional[str] = None  # references an uploaded audio file
     replacement_start_sec: float = 0.0  # offset into replacement audio to start from
