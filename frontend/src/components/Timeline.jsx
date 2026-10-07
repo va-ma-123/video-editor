@@ -178,7 +178,7 @@ export default function Timeline({ project, selectedClipId, selectedGroupId, pla
     if (ops.speed.factor !== 1.0) badges.push(`${ops.speed.factor}x`);
     if (ops.freeze_frame) badges.push("freeze");
     if (ops.transform.rotate) badges.push(`rot${ops.transform.rotate}`);
-    if (ops.transform.crop) badges.push("crop");
+    if (ops.transform.crop || ops.transform.crop_transition) badges.push("crop");
     if (ops.transform.flip) badges.push(ops.transform.flip);
     // A clip inside a group: "inherit" is the do-nothing default (defers to
     // the group), so anything else -- including an explicit "original" --

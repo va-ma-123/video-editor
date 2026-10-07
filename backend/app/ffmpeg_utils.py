@@ -46,7 +46,7 @@ from .models import Clip, SourceInfo
 # inherently frame-based, and freeze padding isn't a real source frame
 # range, so the default end now lands exactly at the clip's actual last
 # frame instead of implicitly including that padding.
-RENDER_LOGIC_VERSION = 7
+RENDER_LOGIC_VERSION = 9
 
 
 class FFmpegError(RuntimeError):
@@ -82,6 +82,90 @@ def _scale_crop_for_proxy(crop: dict[str, int], source: SourceInfo) -> dict[str,
     x = max(0, min(int(round(crop["x"] * scale_x)), proxy_width - width))
     y = max(0, min(int(round(crop["y"] * scale_y)), proxy_height - height))
     return {"x": x, "y": y, "width": width, "height": height}
+
+def _rect_to_dict(rect) -> dict[str, int]:
+    if rect is None:
+        return {"x": 0, "y": 0, "width": 0, "height": 0}
+    if hasattr(rect, "model_dump"):
+        rect = rect.model_dump()
+    return {
+        "x": int(rect.get("x", 0)),
+        "y": int(rect.get("y", 0)),
+        "width": int(rect.get("width", 0)),
+        "height": int(rect.get("height", 0)),
+    }
+
+def _clamp_crop_rect(crop: dict[str, int], source: SourceInfo) -> dict[str, int]:
+    if not source.width or not source.height:
+        return crop
+
+    width = max(1, min(int(crop["width"]), source.width))
+    height = max(1, min(int(crop["height"]), source.height))
+    x = max(0, min(int(crop["x"]), source.width - width))
+    y = max(0, min(int(crop["y"]), source.height - height))
+
+    return {"x": x, "y": y, "width": width, "height": height}
+
+def _active_dimensions(source: SourceInfo, quality: str) -> tuple[int, str]:
+    if quality == "proxy":
+        return _proxy_dimensions(source)
+    return (source.width or 0, source.height or 0)
+
+def _linear_expr(start: int, end: int, duration: float) -> str:
+    if duration <= 0:
+        return str(end)
+
+    return f"({start} + ({end} - {start}) * min(max(t/{duration:.6f},0),1))"
+
+def _crop_transition_filters(
+    start_crop: dict[str, int],
+    end_crop: dict[str, int],
+    output_w: int,
+    output_h: int,
+    duration: float,
+) -> list[str]:
+    
+    crop_x = _linear_expr(start_crop["x"], end_crop["x"], duration)
+    crop_y = _linear_expr(start_crop["y"], end_crop["y"], duration)
+    crop_width = _linear_expr(start_crop["width"], end_crop["width"], duration)
+    crop_height = _linear_expr(start_crop["height"], end_crop["height"], duration)    
+
+    even_crop_width = (
+        f"max(2,2*floor(({crop_width})/2))"
+    )
+    even_crop_height = (
+        f"max(2,2*floor(({crop_height})/2))"
+    )
+
+    return [
+        (
+            "crop="
+            f"w='{even_crop_width}':"
+            f"h='{even_crop_height}':"
+            f"x='min(max(0,{crop_x}),iw-ow)':"
+            f"y='min(max(0,{crop_y}),ih-oh)':"
+            "exact=1:"
+            "eval=frame"
+        ),
+        (
+            f"scale="
+            f"w={output_w}:"
+            f"h={output_h}:"
+            "force_original_aspect_ratio=decrease:"
+            "force_divisible_by=2:"
+            "eval=frame"
+        ),
+        (
+            f"pad="
+            f"w={output_w}:"
+            f"h={output_h}:"
+            "x='(ow-iw)/2':"
+            "y='(oh-ih)/2':"
+            "color=black:"
+            "eval=frame"
+        ),
+        "setsar=1",
+    ]
 
 
 def generate_video_from_image(image_path: str, output_path: str, duration_sec: float, fps: float = IMAGE_CLIP_FPS) -> None:
@@ -219,15 +303,17 @@ def _build_video_filters(clip: Clip, fps: float) -> list[str]:
 
     if ops.freeze_frame and ops.freeze_frame.duration_sec > 0:
         ff = ops.freeze_frame
-        extra_frames = int(round(ff.duration_sec * fps))
         if ff.position == "start":
             filters.append(f"tpad=start_mode=clone:start_duration={ff.duration_sec}")
         else:
             filters.append(f"tpad=stop_mode=clone:stop_duration={ff.duration_sec}")
 
     t = ops.transform
-    if t.crop:
-        filters.append(f"crop={t.crop['width']}:{t.crop['height']}:{t.crop['x']}:{t.crop['y']}")
+    if t.crop_transition:
+        filters.append("__CROP_TRANSITION_PLACEHOLDER__")
+    elif t.crop:
+        crop = _rect_to_dict(t.crop)
+        filters.append(f"crop={crop['width']}:{crop['height']}:{crop['x']}:{crop['y']}")
     if t.rotate == 90:
         filters.append("transpose=1")
     elif t.rotate == 180:
@@ -328,9 +414,11 @@ def render_clip(
     # Approximate output duration after speed + freeze, used to place fade-out correctly
     output_duration = (trim_duration / speed_factor) + freeze_extra
 
+    output_width, output_height = _active_dimensions(source, quality)
+
     effective_clip = clip
     if quality == "proxy" and clip.operations.transform.crop:
-        scaled_crop = _scale_crop_for_proxy(clip.operations.transform.crop, source)
+        scaled_crop = _scale_crop_for_proxy(_rect_to_dict(clip.operations.transform.crop), source)
         effective_clip = clip.model_copy(
             update={
                 "operations": clip.operations.model_copy(
@@ -342,8 +430,68 @@ def render_clip(
                 )
             }
         )
+    elif quality == "proxy" and clip.operations.transform.crop_transition:
+        transition = clip.operations.transform.crop_transition
+        effective_clip = clip.model_copy(
+            update={
+                "operations": clip.operations.model_copy(
+                    update={
+                        "transform": clip.operations.transform.model_copy(
+                            update={
+                                "crop_transition": {
+                                    "start": _scale_crop_for_proxy(_rect_to_dict(transition.start), source),
+                                    "end": _scale_crop_for_proxy(_rect_to_dict(transition.end), source),
+                                }
+                            }
+                        )
+                    }
+                )
+            }
+        )
+    elif clip.operations.transform.crop_transition:
+        transition = clip.operations.transform.crop_transition
+        effective_clip = clip.model_copy(
+            update={
+                "operations": clip.operations.model_copy(
+                    update={
+                        "transform": clip.operations.transform.model_copy(
+                            update={
+                                "crop_transition": {
+                                    "start": _clamp_crop_rect(_rect_to_dict(transition.start), source),
+                                    "end": _clamp_crop_rect(_rect_to_dict(transition.end), source),
+                                }
+                            }
+                        )
+                    }
+                )
+            }
+        )
 
     video_filters = _build_video_filters(effective_clip, fps)
+
+    if effective_clip.operations.transform.crop_transition:
+        transition = effective_clip.operations.transform.crop_transition
+        if isinstance(transition, dict):
+            start_crop = _rect_to_dict(transition["start"])
+            end_crop = _rect_to_dict(transition["end"])
+        else:
+            start_crop = _rect_to_dict(transition.start)
+            end_crop = _rect_to_dict(transition.end)
+        crop_filters = _crop_transition_filters(
+            start_crop, 
+            end_crop,
+            output_width or 1,
+            output_height or 1,
+            max(output_duration, 1/fps)
+        )
+        expanded_filters = []
+        for f in video_filters:
+            if f == "__CROP_TRANSITION_PLACEHOLDER__":
+                expanded_filters.extend(crop_filters)
+            else:
+                expanded_filters.append(f)
+        video_filters = expanded_filters
+
     audio_filters = _build_audio_filters(effective_clip, speed_factor, sync_to_speed=sync_audio_to_speed)
 
     # Resolve fade-out placeholders now that we know output_duration
@@ -377,8 +525,29 @@ def render_clip(
     if has_replacement_audio:
         cmd += ["-ss", f"{clip.operations.audio.replacement_start_sec:.6f}", "-i", audio_asset_path]
 
+    # Check if the crop transition needs a black background stream (moving
+    # crop window case -- pad can't handle animated x/y safely when position
+    # changes, because x + iw > canvas_w can occur mid-animation).
+    black_canvas_sentinel = next((f for f in video_filters if f.startswith("__NEEDS_BLACK_CANVAS__")), None)
+
     filter_complex_parts = []
-    filter_complex_parts.append(f"[0:v]{','.join(video_filters)}[vout]" if video_filters else "[0:v]null[vout]")
+    if black_canvas_sentinel:
+        # Split at the sentinel: filters before it run on [0:v], then crop,
+        # then overlay onto the black canvas.
+        canvas_size = black_canvas_sentinel.split("=")[1]  # e.g. "854x480"
+        sentinel_idx = video_filters.index(black_canvas_sentinel)
+        pre_filters = [f for f in video_filters[:sentinel_idx] if not f.startswith("__")]
+        # After sentinel: [crop_filter, overlay_filter]
+        post = [f for f in video_filters[sentinel_idx + 1:] if not f.startswith("__")]
+        crop_f = post[0]
+        overlay_f = post[1] if len(post) > 1 else "overlay=0:0"
+        pre_chain = ",".join(pre_filters) if pre_filters else "null"
+        filter_complex_parts.append(f"color=black:{canvas_size}:r={fps}[bg]")
+        filter_complex_parts.append(f"[0:v]{pre_chain},{crop_f}[cropped]")
+        filter_complex_parts.append(f"[bg][cropped]{overlay_f}[vout]")
+    else:
+        clean = [f for f in video_filters if not f.startswith("__")]
+        filter_complex_parts.append(f"[0:v]{','.join(clean)}[vout]" if clean else "[0:v]null[vout]")
 
     if has_replacement_audio:
         a_chain = ",".join(audio_filters) if audio_filters else "anull"

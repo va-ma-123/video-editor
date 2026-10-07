@@ -7,13 +7,44 @@ export default function ClipEditor({ clip, source, onChange }) {
   const [soundUploadStatus, setSoundUploadStatus] = useState("");
   const [startDraft, setStartDraft] = useState("");
   const [endDraft, setEndDraft] = useState("");
+  const [cropDraft, setCropDraft] = useState({ x: "", y: "", width: "", height: "" });
+  const [cropTransitionDraft, setCropTransitionDraft] = useState({
+    start: { x: "", y: "", width: "", height: "" },
+    end: { x: "", y: "", width: "", height: "" },
+  });
+
+  const sourceWidth = Math.max(source?.width || 640, 1);
+  const sourceHeight = Math.max(source?.height || 360, 1);
+  const defaultCropRect = () => ({ x: 0, y: 0, width: sourceWidth, height: sourceHeight });
 
   useEffect(() => {
     if(clip) {
       setStartDraft(String(clip.start_frame));
       setEndDraft(String(clip.end_frame));
+      const crop = clip.operations.transform.crop;
+      const cropTransition = clip.operations.transform.crop_transition;
+      setCropDraft({
+        x: String(crop?.x ?? 0),
+        y: String(crop?.y ?? 0),
+        width: String(crop?.width ?? sourceWidth),
+        height: String(crop?.height ?? sourceHeight),
+      });
+      setCropTransitionDraft({
+        start: {
+          x: String(cropTransition?.start?.x ?? 0),
+          y: String(cropTransition?.start?.y ?? 0),
+          width: String(cropTransition?.start?.width ?? sourceWidth),
+          height: String(cropTransition?.start?.height ?? sourceHeight),
+        },
+        end: {
+          x: String(cropTransition?.end?.x ?? 0),
+          y: String(cropTransition?.end?.y ?? 0),
+          width: String(cropTransition?.end?.width ?? sourceWidth),
+          height: String(cropTransition?.end?.height ?? sourceHeight),
+        },
+      });
     }
-  }, [clip?.id]);
+  }, [clip?.id, sourceWidth, sourceHeight]);
 
   if (!clip) {
     return <div className="clip-editor empty">Select a clip in the timeline to edit its operations.</div>;
@@ -28,6 +59,7 @@ export default function ClipEditor({ clip, source, onChange }) {
   const updateTransform = (patch) => update({ transform: { ...ops.transform, ...patch } });
   const updateAudio = (patch) => update({ audio: { ...ops.audio, ...patch } });
   const updateFade = (patch) => update({ fade: { ...ops.fade, ...patch } });
+
 
   const metronome = ops.audio.metronome || defaultMetronome();
   const updateMetronome = (patch) => updateAudio({ metronome: { ...metronome, ...patch } });
@@ -47,29 +79,59 @@ export default function ClipEditor({ clip, source, onChange }) {
   };
 
   const clampCrop = (crop) => {
-    const maxWidth = Math.max(source?.width || 640, 1);
-    const maxHeight = Math.max(source?.height || 360, 1);
-    const width = Math.max(1, Math.min(parseInt(crop.width, 10) || maxWidth, maxWidth));
-    const height = Math.max(1, Math.min(parseInt(crop.height, 10) || maxHeight, maxHeight));
-    const x = Math.max(0, Math.min(parseInt(crop.x, 10) || 0, maxWidth - width));
-    const y = Math.max(0, Math.min(parseInt(crop.y, 10) || 0, maxHeight - height));
+    const width = Math.max(1, Math.min(Number.parseInt(crop?.width, 10) || sourceWidth, sourceWidth));
+    const height = Math.max(1, Math.min(Number.parseInt(crop.height, 10) || sourceHeight, sourceHeight));
+    const x = Math.max(0, Math.min(Number.parseInt(crop.x, 10) || 0, sourceWidth - width));
+    const y = Math.max(0, Math.min(Number.parseInt(crop.y, 10) || 0, sourceHeight - height));
     return { x, y, width, height };
   };
 
-  const updateCrop = (patch) => {
-    const nextCrop = clampCrop({ ...ops.transform.crop, ...patch });
+  const cropToDraft = (crop) => ({
+    x: String(crop?.x ?? 0),
+    y: String(crop?.y ?? 0),
+    width: String(crop?.width ?? sourceWidth),
+    height: String(crop?.height ?? sourceHeight),
+  });
+
+  const clampCropTransition = (transition) => ({
+    start: clampCrop(transition?.start),
+    end: clampCrop(transition?.end),
+  });
+
+  const cropTransitionToDraft = (transition) => ({
+    start: cropToDraft(transition?.start),
+    end: cropToDraft(transition?.end),
+  });
+
+  const applyCropDraft = () => {
+    const nextCrop = clampCrop(cropDraft);
     updateTransform({ crop: nextCrop });
-  };
+    setCropDraft(cropToDraft(nextCrop));
+  }
 
   const toggleCrop = (enabled) => {
-    updateTransform({ crop: enabled ? { x: 0, y: 0, width: 640, height: 360 } : null });
+    const nextCrop = enabled ? defaultCropRect() : null;
+    updateTransform({ crop: nextCrop });
+    setCropDraft(cropToDraft(nextCrop || defaultCropRect()));
+  };
+
+  const applyCropTransitionDraft = () => {
+    const nextTransition = clampCropTransition(cropTransitionDraft);
+    updateTransform({ crop_transition: nextTransition });
+    setCropTransitionDraft(cropTransitionToDraft(nextTransition));
+  };
+
+  const toggleCropTransition = (enabled) => {
+    const nextTransition = enabled ? { start: defaultCropRect(), end: defaultCropRect() } : null;
+    updateTransform({ crop_transition: nextTransition });
+    setCropTransitionDraft(cropTransitionToDraft(nextTransition || { start: defaultCropRect(), end: defaultCropRect() }));
   };
 
   const applyRange = () => {
-    let rawStart = parseInt(startDraft, 10);
-    let rawEnd = parseInt(endDraft, 10);
-    if (isNaN(rawStart)) rawStart = clip.start_frame;
-    if (isNaN(rawEnd)) rawEnd = clip.end_frame;
+    let rawStart = Number.parseInt(startDraft, 10);
+    let rawEnd = Number.parseInt(endDraft, 10);
+    if (Number.isNaN(rawStart)) rawStart = clip.start_frame;
+    if (Number.isNaN(rawEnd)) rawEnd = clip.end_frame;
  
     // Clamp both together (not independently) so typing a new start doesn't
     // get fought by a stale end value, or vice versa.
@@ -170,12 +232,11 @@ export default function ClipEditor({ clip, source, onChange }) {
       <section>
         <label className="field-label">Speed: {ops.speed.factor.toFixed(2)}x</label>
         <input
-          type="range"
-          min="0.1"
-          max="5"
-          step="0.1"
+          type="number"
+          min={0}
+          step={0.05}
           value={ops.speed.factor}
-          onChange={(e) => updateSpeed({ factor: parseFloat(e.target.value) })}
+          onChange={(e) => updateSpeed({ factor: Number.parseFloat(e.target.value) })}
         />
         <label className="row">
           <input
@@ -213,7 +274,7 @@ export default function ClipEditor({ clip, source, onChange }) {
                 step="0.1"
                 value={ops.freeze_frame.duration_sec}
                 onChange={(e) =>
-                  update({ freeze_frame: { ...ops.freeze_frame, duration_sec: parseFloat(e.target.value) || 0 } })
+                  update({ freeze_frame: { ...ops.freeze_frame, duration_sec: Number.parseFloat(e.target.value) || 0 } })
                 }
               />
             </label>
@@ -466,8 +527,8 @@ export default function ClipEditor({ clip, source, onChange }) {
                     type="number"
                     min={k === "width" || k === "height" ? "1" : "0"}
                     max={k === "x" || k === "width" ? source?.width || undefined : source?.height || undefined}
-                    value={ops.transform.crop[k]}
-                    onChange={(e) => updateCrop({ [k]: parseInt(e.target.value, 10) || 0 })}
+                      value={cropDraft[k]}
+                      onChange={(e) => setCropDraft({ ...cropDraft, [k]: e.target.value })}
                   />
                 </label>
               ))}
@@ -475,6 +536,60 @@ export default function ClipEditor({ clip, source, onChange }) {
             <div className="crop-meta dim mono">
               Source pixels ⋅ max {source?.width ?? "-"}x{source?.height ?? "-"}
             </div>
+            <button 
+              type="button"
+              onClick={applyCropDraft}
+              className={JSON.stringify(cropDraft) !== JSON.stringify(cropToDraft(ops.transform.crop)) ? "primary" : ""}
+            >
+              Apply crop
+            </button>
+          </div>
+        )}
+
+        <label className="row">
+          <input 
+            type="checkbox" 
+            checked={!!ops.transform.crop_transition}
+            onChange={(e) => toggleCropTransition(e.target.checked)}  
+          />
+          Crop Transition
+        </label>
+        {ops.transform.crop_transition && (
+          <div className="sub-fields">
+            {[["start", "Start"], ["end", "End"]].map(([section, label]) => (
+              <div key={section}>
+                <div className="dim" style={{ marginBottom: "0.25rem" }}>{label}</div>
+                <div className="crop-fields">
+                  {["x", "y", "width", "height"].map((k) => (
+                    <label key={`${section}-${k}`} className="field-label small">
+                      {k}
+                      <input
+                        type="number"
+                        min={k === "width" || k === "height" ? "1" : "0"}
+                        max={k === "x" || k === "width" ? sourceWidth : sourceHeight}
+                        value={cropTransitionDraft[section][k]}
+                        onChange={(e) => 
+                          setCropTransitionDraft({
+                            ...cropTransitionDraft,
+                            [section]: { ...cropTransitionDraft[section], [k]: e.target.value },
+                          })
+                        }
+                      />
+                    </label>
+                  ))}
+                </div>
+              </div>
+            ))}
+            <div className="crop-meta dim mono">
+              Animated crop from start to end over the clip duration.
+            </div>
+            <button 
+              type="button"
+              onClick={applyCropTransitionDraft}
+              className={JSON.stringify(cropTransitionDraft) !== JSON.stringify(cropTransitionToDraft(ops.transform.crop_transition)) ? "primary" : ""}
+            >
+              Apply crop transition
+            </button>
           </div>
         )}
       </section>

@@ -123,9 +123,19 @@ class AudioOp(BaseModel):
     replacement_start_sec: float = 0.0  # offset into replacement audio to start from
     metronome: Optional[MetronomeOp] = None  # used when mode == "metronome"
 
+class CropRect(BaseModel):
+    x: int = 0
+    y: int = 0
+    width: int = 0
+    height: int = 0
+
+class CropTransitionOp(BaseModel):
+    start: CropRect
+    end: CropRect
 
 class TransformOp(BaseModel):
-    crop: Optional[Dict[str, int]] = None  # {x, y, width, height} in source pixel space
+    crop: Optional[CropRect] = None  # {x, y, width, height} in source pixel space
+    crop_transition: Optional[CropTransitionOp]
     rotate: Literal[0, 90, 180, 270] = 0
     flip: Optional[Literal["horizontal", "vertical"]] = None
 
