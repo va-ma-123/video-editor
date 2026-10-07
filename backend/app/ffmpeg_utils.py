@@ -344,6 +344,13 @@ def _build_audio_filters(clip: Clip, speed_factor: float, sync_to_speed: bool = 
     if ops.audio.mode == "muted":
         return ["volume=0"]
 
+    freeze = ops.freeze_frame
+    if freeze and freeze.duration_sec > 0:
+        if freeze.position == "start":
+            filters.append(f"adelay={int(freeze.duration_sec * 1000)}|{int(freeze.duration_sec * 1000)}")
+        elif freeze.position == "end":
+            filters.append(f"apad=pad_dur={freeze.duration_sec:.6f}")
+
     should_reverse_audio = ops.reverse and ops.audio.reverse and not (
         ops.audio.mode == "replaced" and ops.audio.metronome is not None
     )

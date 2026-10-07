@@ -177,7 +177,11 @@ def _clip_local_output_time(clip: Clip, source: SourceInfo, frame: int) -> float
     fps = source.fps or 30.0
     speed_factor = clip.operations.speed.factor
     clamped = max(clip.start_frame, min(clip.end_frame, frame))
-    return (clamped - clip.start_frame) / fps / speed_factor
+    offset = (clamped - clip.start_frame) / fps / speed_factor
+    freeze_extra = clip.operations.freeze_frame.duration_sec if clip.operations.freeze_frame else 0.0
+    if clip.operations.freeze_frame and clip.operations.freeze_frame.position == "start":
+        return offset + freeze_extra
+    return offset
 
 
 def _group_member_offsets(project: Project, group_id: str) -> list[tuple[Clip, SourceInfo, float, float]]:
@@ -223,6 +227,10 @@ def _group_scoped_beats_for_clip(project: Project, group_id: str, clip: Clip, me
 
     window_start = start_offset + _clip_local_output_time(start_clip, start_source, start_frame)
     window_end = end_offset + _clip_local_output_time(end_clip, end_source, end_frame)
+    if start_clip.operations.freeze_frame and start_clip.operations.freeze_frame.position == "start":
+        window_start = start_offset + _clip_local_output_time(start_clip, start_source, start_frame)
+    if end_clip.operations.freeze_frame and end_clip.operations.freeze_frame.position == "end":
+        window_end += end_clip.operations.freeze_frame.duration_sec
     window_end = max(window_end, window_start)  # guards a start clip picked after the end clip
     window_duration = window_end - window_start
 
@@ -416,8 +424,14 @@ def resolve_clip_audio(project: Project, clip: Clip) -> ResolvedAudio:
             # there's only ever this one clip -- so only start_frame/end_frame matter here.
             start_frame = met.start_frame if met.start_frame is not None else clip.start_frame
             end_frame = met.end_frame if met.end_frame is not None else clip.end_frame
-            window_start = _clip_local_output_time(clip, source, start_frame)
-            window_end = max(_clip_local_output_time(clip, source, end_frame), window_start)
+            base_start = _clip_local_output_time(clip, source, start_frame)
+            base_end = _clip_local_output_time(clip, source, end_frame)
+            if clip.operations.freeze_frame and clip.operations.freeze_frame.position == "start":
+                window_start = base_start
+                window_end = max(base_end + clip.operations.freeze_frame.duration_sec, base_start)
+            else:
+                window_start = base_start
+                window_end = max(base_end + (clip.operations.freeze_frame.duration_sec if clip.operations.freeze_frame else 0.0), base_start)
             beats = [window_start + t for t in compute_beat_times(window_end - window_start, met)]
         else:
             beats, duration = _group_scoped_beats_for_clip(project, owner, clip, met)
