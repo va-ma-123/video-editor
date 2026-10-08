@@ -4,7 +4,7 @@ export function defaultOperations() {
     reverse: false,
     speed: { factor: 1.0, pitch_correction: true },
     freeze_frame: null,
-    transform: { crop: null, crop_transition: null, rotate: 0, flip: null },
+    transform: { crop: null, crop_transition: null, crop_mode: "crop", rotate: 0, flip: null },
     fade: { fade_in: { duration_sec: 0 }, fade_out: { duration_sec: 0 } },
     audio: { mode: "inherit", reverse: false, volume: 1.0, replacement_asset_id: null, replacement_start_sec: 0, metronome: null },
   };

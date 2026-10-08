@@ -117,6 +117,18 @@ def _linear_expr(start: int, end: int, duration: float) -> str:
 
     return f"({start} + ({end} - {start}) * min(max(t/{duration:.6f},0),1))"
 
+def _transition_crop_exprs(
+    start_crop: dict[str, int],
+    end_crop: dict[str, int],
+    duration: float,
+) -> tuple[str, str, str, str]:
+    crop_x = _linear_expr(start_crop["x"], end_crop["x"], duration)
+    crop_y = _linear_expr(start_crop["y"], end_crop["y"], duration)
+    crop_width = _linear_expr(start_crop["width"], end_crop["width"], duration)
+    crop_height = _linear_expr(start_crop["height"], end_crop["height"], duration) 
+    return crop_x, crop_y, crop_width, crop_height
+    
+
 def _crop_transition_filters(
     start_crop: dict[str, int],
     end_crop: dict[str, int],
@@ -125,10 +137,7 @@ def _crop_transition_filters(
     duration: float,
 ) -> list[str]:
     
-    crop_x = _linear_expr(start_crop["x"], end_crop["x"], duration)
-    crop_y = _linear_expr(start_crop["y"], end_crop["y"], duration)
-    crop_width = _linear_expr(start_crop["width"], end_crop["width"], duration)
-    crop_height = _linear_expr(start_crop["height"], end_crop["height"], duration)    
+    crop_x, crop_y, crop_width, crop_height = _transition_crop_exprs(start_crop, end_crop, duration)   
 
     even_crop_width = (
         f"max(2,2*floor(({crop_width})/2))"
@@ -310,10 +319,16 @@ def _build_video_filters(clip: Clip, fps: float) -> list[str]:
 
     t = ops.transform
     if t.crop_transition:
-        filters.append("__CROP_TRANSITION_PLACEHOLDER__")
+        if t.crop_mode == "blur":
+            filters.append("__BLUR_BACKGROUND_PLACEHOLDER__")
+        else:
+            filters.append("__CROP_TRANSITION_PLACEHOLDER__")
     elif t.crop:
-        crop = _rect_to_dict(t.crop)
-        filters.append(f"crop={crop['width']}:{crop['height']}:{crop['x']}:{crop['y']}")
+        if t.crop_mode == "blur":
+            filters.append("__BLUR_BACKGROUND_PLACEHOLDER__")
+        else:
+            crop = _rect_to_dict(t.crop)
+            filters.append(f"crop={crop['width']}:{crop['height']}:{crop['x']}:{crop['y']}")
     if t.rotate == 90:
         filters.append("transpose=1")
     elif t.rotate == 180:
@@ -535,13 +550,60 @@ def render_clip(
     if has_replacement_audio:
         cmd += ["-ss", f"{clip.operations.audio.replacement_start_sec:.6f}", "-i", audio_asset_path]
 
+
+    blur_background_sentinel = next((f for f in video_filters if f.startswith("__BLUR_BACKGROUND_PLACEHOLDER__")), None)
+
     # Check if the crop transition needs a black background stream (moving
     # crop window case -- pad can't handle animated x/y safely when position
     # changes, because x + iw > canvas_w can occur mid-animation).
     black_canvas_sentinel = next((f for f in video_filters if f.startswith("__NEEDS_BLACK_CANVAS__")), None)
 
     filter_complex_parts = []
-    if black_canvas_sentinel:
+    if blur_background_sentinel:
+        transition = effective_clip.operations.transform.crop_transition
+        if transition:
+            if isinstance(transaction, dict):
+                start_crop = _rect_to_dict(transition["start"])
+                end_crop = _rect_to_dict(transition["end"])
+            else:
+                start_crop = _rect_to_dict(transition.start)
+                end_crop = _rect_to_dict(transition.end)
+
+            crop_x, crop_y, crop_width, crop_height = _transition_crop_exprs(
+                start_crop,
+                end_crop, 
+                max(output_duration, 1/fps)
+            )
+            crop_filter = (
+                "crop="
+                f"w='{crop_width}':"
+                f"h='{crop_height}':"
+                f"x='min(max(0,{crop_x}),iw-ow)':"
+                f"y='min(max(0,{crop_y}),ih-oh)':"
+                "exact=1:"
+                "eval=frame"
+            )
+            overlay_x = crop_x
+            overlay_y = crop_y
+        else:
+            crop = _rect_to_dict(effective_clip.operations.transform.crop)
+            crop_filter = f"crop={crop['width']}:{crop['height']}:{crop['x']}:{crop['y']}"
+            overlay_x = str(crop["x"])
+            overlay_y = str(crop["y"])
+
+        sentinel_idx = video_filters.index(blur_background_sentinel)
+        pre_filters = [f for f in video_filters[:sentinel_idx] if not f.startswith("__")]
+        post_filters = [f for f in video_filters[sentinel_idx + 1:] if not f.startswith("__")]
+        pre_chain = ",".join(pre_filters) if pre_filters else "null"
+        post_chain = ",".join(post_filters) if post_filters else "null"
+
+        filter_complex_parts.append(f"[0:v]{pre_chain},split=2[bg][fg]" if pre_filters else "[0:v]split=2[bg][fg]")
+        filter_complex_parts.append("[bg]boxblur=luma_radius=20:luma_power=1:chroma_radius=10:chroma_power=1[blurred]")
+        filter_complex_parts.append(f"[fg]{crop_filter}[focus]")
+        filter_complex_parts.append(f"[blurred][focus]overlay=x='{overlay_x}':y='{overlay_y}':shortest=1[mid]")
+        filter_complex_parts.append(f"[mid]{post_chain}[vout]" if post_filters else "[mid]null[vout]")
+
+    elif black_canvas_sentinel:
         # Split at the sentinel: filters before it run on [0:v], then crop,
         # then overlay onto the black canvas.
         canvas_size = black_canvas_sentinel.split("=")[1]  # e.g. "854x480"

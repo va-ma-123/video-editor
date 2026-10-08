@@ -533,6 +533,17 @@ export default function ClipEditor({ clip, source, onChange }) {
           </select>
         </label>
 
+        <label className="field-label">
+          Crop Mode:
+          <select 
+            value={ops.transform.crop_mode || "crop"}
+            onChange={(e) => updateTransform({ crop_mode: e.target.value })}
+          >
+            <option value="crop">Crop out the rest</option>
+            <option value="blur">Blur the rest</option>
+          </select>
+        </label>
+
         <label className="row">
           <input type="checkbox" checked={!!ops.transform.crop} onChange={(e) => toggleCrop(e.target.checked)} />
           Crop

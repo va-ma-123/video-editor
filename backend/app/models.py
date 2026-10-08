@@ -137,6 +137,7 @@ class CropTransitionOp(BaseModel):
 class TransformOp(BaseModel):
     crop: Optional[CropRect] = None  # {x, y, width, height} in source pixel space
     crop_transition: Optional[CropTransitionOp]
+    crop_mode: Literal["crop", "blur"] = "crop"
     rotate: Literal[0, 90, 180, 270] = 0
     flip: Optional[Literal["horizontal", "vertical"]] = None
 

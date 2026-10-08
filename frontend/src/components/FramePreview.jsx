@@ -112,6 +112,7 @@ export default function FramePreview({ source, clip, onMarkRange, onCropChange, 
   const crop = clampCropToSource(clip?.operations?.transform?.crop, source);
   const cropPreview = sourceCropToPreviewCrop(crop, source, previewLayout);
   const hasCropOverlay = !!cropPreview && !!previewLayout;
+  const cropMode = clip?.operations?.transform?.crop_mode || "crop";
   
   const syncPreviewSize = useCallback(() => {
     const video = videoRef.current;
