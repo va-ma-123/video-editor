@@ -158,6 +158,7 @@ class Clip(BaseModel):
     end_frame: int  # exclusive
     operations: ClipOperations = Field(default_factory=ClipOperations)
     group_id: Optional[str] = None  # timeline organization only; never read by rendering
+    name: Optional[str] = None # if not set, defaults to source filename
 
 
 # ---------------------------------------------------------------------------

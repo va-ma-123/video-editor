@@ -36,8 +36,8 @@ export default function Timeline({ project, selectedClipId, selectedGroupId, pla
     const clip = clips[index];
     const mid = Math.floor((clip.start_frame + clip.end_frame) / 2);
     if (mid <= clip.start_frame || mid >= clip.end_frame) return;
-    const first = { ...clip, id: newClipId(), start_frame: clip.start_frame, end_frame: mid };
-    const second = { ...clip, id: newClipId(), start_frame: mid, end_frame: clip.end_frame };
+    const first = { ...clip, id: newClipId(), start_frame: clip.start_frame, end_frame: mid, name: undefined };
+    const second = { ...clip, id: newClipId(), start_frame: mid, end_frame: clip.end_frame, name: undefined };
     const newClips = [...clips];
     newClips.splice(index, 1, first, second); // both keep the original's group_id
     commit({ clips: newClips });
@@ -69,6 +69,18 @@ export default function Timeline({ project, selectedClipId, selectedGroupId, pla
     const name = window.prompt("Rename group", groups[groupId].name);
     if (!name) return;
     commit({ groups: { ...groups, [groupId]: { ...groups[groupId], name } } });
+  };
+
+  const handleRenameClip = (clipId) => {
+    const clip = clips.find((c) => c.id === clipId);
+    if (!clip) return;
+    const currentName = clip.name || "";
+    const name = window.prompt("Rename clip", currentName);
+    if (name === null) return;
+    const updatedClips = clips.map((c) => 
+      c.id === clipId ? { ...c, name: name || null } : c  
+    );
+    commit({ clips: updatedClips });
   };
 
   const handleDuplicateGroup = (groupId) => {
@@ -222,7 +234,7 @@ export default function Timeline({ project, selectedClipId, selectedGroupId, pla
         <div className="clip-drag-handle" title="Drag to reorder">⠿</div>
         <div className="clip-index">{isPlaying ? " ▶" : node.flatIndex + 1}</div>
         <div className="clip-info">
-          <div className="clip-name">{source?.source_kind === "image" ? "🖼️ " : ""}{source?.filename || clip.source_id}</div>
+          <div className="clip-name">{clip.name || (source?.source_kind === "image" ? "🖼️ " : "")}{clip.name ? "" : (source?.filename || clip.source_id)}</div>
           <div className="clip-meta mono">
             f{clip.start_frame}–{clip.end_frame} · {formatSec(duration)}
           </div>
@@ -233,6 +245,7 @@ export default function Timeline({ project, selectedClipId, selectedGroupId, pla
           )}
         </div>
         <div className="clip-actions" onClick={(e) => e.stopPropagation()}>
+          <button onClick={() => handleRenameClip(clip.id)} title="Rename clip">✎</button>
           <button onClick={() => duplicate(node.flatIndex)} title="Duplicate (useful for looping)">⧉</button>
           <button onClick={() => split(node.flatIndex)} title="Split at midpoint">split</button>
           <button onClick={() => remove(clip.id)} title="Delete" className="danger">×</button>
