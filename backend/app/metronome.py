@@ -44,7 +44,7 @@ from typing import Optional
 from . import storage
 from .ffmpeg_utils import FFmpegError
 from .groups_util import group_ancestor_chain, clips_in_group
-from .models import Clip, MetronomeOp, Project, SourceInfo
+from .models import Clip, MetronomeOp, Project, SourceInfo, SpeedOp
 
 SAMPLE_RATE = 48000
 CHANNELS = 2
@@ -155,17 +155,53 @@ def compute_beat_times(duration: float, op: MetronomeOp) -> list[float]:
 # length ffmpeg will actually produce, not the raw trim length.
 # ---------------------------------------------------------------------------
 
-def effective_clip_duration(clip: Clip, source: SourceInfo) -> float:
+@dataclass
+class ResolvedSpeed:
+    factor: float
+    pitch_correction: bool
+    fingerprint: dict
+
+def _find_speed_source(project: Project, clip: Clip):
+    if abs(clip.operations.speed.factor - 1.0) > 1e-9:
+        return "clip", clip.operations.speed
+
+    chain = group_ancestor_chain(clip.group_id, project.groups)
+    for group_id in reversed(chain):
+        group = project.groups[group_id]
+        video = getattr(group.operations, "video", None)
+        speed = getattr(video, "speed", None)
+        if speed is not None and abs(speed.factor - 1.0) > 1e-9:
+            return group_id, speed
+
+    return None, None
+
+def resolve_clip_speed(project: Project, clip: Clip) -> ResolvedSpeed:
+    owner, speed = _find_speed_source(project, clip)
+    if speed is None:
+        speed = SpeedOp()
+        owner = None
+
+    return ResolvedSpeed(
+        factor=speed.factor,
+        pitch_correction=speed.pitch_correction,
+        fingerprint={
+            "owner": owner,
+            "factor": speed.factor,
+            "pitch_correction": speed.pitch_correction,
+        },
+    )
+
+def effective_clip_duration(project:Project, clip: Clip, source: SourceInfo) -> float:
     fps = source.fps or 30.0
     start_sec = clip.start_frame / fps
     end_sec = clip.end_frame / fps
     trim_duration = max(end_sec - start_sec, 1 / fps)
-    speed_factor = clip.operations.speed.factor
+    speed_factor = resolve_clip_speed(project, clip).factor
     freeze_extra = clip.operations.freeze_frame.duration_sec if clip.operations.freeze_frame else 0.0
     return (trim_duration / speed_factor) + freeze_extra
 
 
-def _clip_local_output_time(clip: Clip, source: SourceInfo, frame: int) -> float:
+def _clip_local_output_time(project: Project, clip: Clip, source: SourceInfo, frame: int) -> float:
     """Convert an absolute source frame number into this clip's own
     output-relative time in seconds (0 = this clip's own first frame,
     the same timeline effective_clip_duration measures) -- i.e. post-speed,
@@ -175,7 +211,7 @@ def _clip_local_output_time(clip: Clip, source: SourceInfo, frame: int) -> float
     start/end frame can go stale if the clip's trim is changed after the
     fact -- better to clamp into range than break the render."""
     fps = source.fps or 30.0
-    speed_factor = clip.operations.speed.factor
+    speed_factor = resolve_clip_speed(project, clip).factor
     clamped = max(clip.start_frame, min(clip.end_frame, frame))
     offset = (clamped - clip.start_frame) / fps / speed_factor
     freeze_extra = clip.operations.freeze_frame.duration_sec if clip.operations.freeze_frame else 0.0
@@ -193,7 +229,7 @@ def _group_member_offsets(project: Project, group_id: str) -> list[tuple[Clip, S
     offset = 0.0
     for c in members:
         source = project.sources[c.source_id]
-        duration = effective_clip_duration(c, source)
+        duration = effective_clip_duration(project, c, source)
         entries.append((c, source, offset, duration))
         offset += duration
     return entries
@@ -225,10 +261,10 @@ def _group_scoped_beats_for_clip(project: Project, group_id: str, clip: Clip, me
     start_frame = met.start_frame if met.start_frame is not None else start_clip.start_frame
     end_frame = met.end_frame if met.end_frame is not None else end_clip.end_frame
 
-    window_start = start_offset + _clip_local_output_time(start_clip, start_source, start_frame)
-    window_end = end_offset + _clip_local_output_time(end_clip, end_source, end_frame)
+    window_start = start_offset + _clip_local_output_time(project, start_clip, start_source, start_frame)
+    window_end = end_offset + _clip_local_output_time(project, end_clip, end_source, end_frame)
     if start_clip.operations.freeze_frame and start_clip.operations.freeze_frame.position == "start":
-        window_start = start_offset + _clip_local_output_time(start_clip, start_source, start_frame)
+        window_start = start_offset + _clip_local_output_time(project, start_clip, start_source, start_frame)
     if end_clip.operations.freeze_frame and end_clip.operations.freeze_frame.position == "end":
         window_end += end_clip.operations.freeze_frame.duration_sec
     window_end = max(window_end, window_start)  # guards a start clip picked after the end clip
@@ -243,7 +279,7 @@ def _group_scoped_beats_for_clip(project: Project, group_id: str, clip: Clip, me
         # Shouldn't happen -- resolution only reaches here via this clip's
         # own ancestor chain, so it must be a member. Fail safe with silence
         # rather than raising mid-render.
-        return [], effective_clip_duration(clip, project.sources[clip.source_id])
+        return [], effective_clip_duration(project, clip, project.sources[clip.source_id])
     _, _, offset, clip_duration = by_id[clip.id]
 
     is_last_member = entries[-1][0].id == clip.id
@@ -419,13 +455,13 @@ def resolve_clip_audio(project: Project, clip: Clip) -> ResolvedAudio:
                                   replacement_start_sec=0.0, fingerprint={"mode": "original"})
 
         if owner == "clip":
-            duration = effective_clip_duration(clip, source)
+            duration = effective_clip_duration(project, clip, source)
             # start_clip_id/end_clip_id are meaningless at clip scope --
             # there's only ever this one clip -- so only start_frame/end_frame matter here.
             start_frame = met.start_frame if met.start_frame is not None else clip.start_frame
             end_frame = met.end_frame if met.end_frame is not None else clip.end_frame
-            base_start = _clip_local_output_time(clip, source, start_frame)
-            base_end = _clip_local_output_time(clip, source, end_frame)
+            base_start = _clip_local_output_time(project, clip, source, start_frame)
+            base_end = _clip_local_output_time(project, clip, source, end_frame)
             if clip.operations.freeze_frame and clip.operations.freeze_frame.position == "start":
                 window_start = base_start
                 window_end = max(base_end + clip.operations.freeze_frame.duration_sec, base_start)

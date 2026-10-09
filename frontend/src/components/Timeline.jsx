@@ -253,6 +253,7 @@ export default function Timeline({ project, selectedClipId, selectedGroupId, pla
     // this field yet -- treat that the same as an explicit "inherit".
     const groupAudioMode = group.operations?.audio?.mode || "inherit";
     const groupVideoMode = group.operations?.video?.mode || "sequential";
+    const groupSpeed = group.operations?.video?.speed?.factor ?? 1.0;
 
     return (
       <div key={group.id}>
@@ -278,6 +279,9 @@ export default function Timeline({ project, selectedClipId, selectedGroupId, pla
             <span className="dim mono"> ({clipCount} clip{clipCount === 1 ? "" : "s"})</span>
             {groupVideoMode === "composite" && (
               <span className="clip-badges"><span className="badge">composite</span></span>
+            )}
+            {groupSpeed !== 1.0 && (
+              <span className="clip-badges"><span className="badge">{groupSpeed}x</span></span>
             )}
             {groupAudioMode !== "inherit" && (
               <span className="clip-badges"><span className="badge">{groupAudioMode}</span></span>

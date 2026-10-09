@@ -43,6 +43,7 @@ export function defaultGroupOperations() {
     audio: { mode: "inherit", metronome: null },
     video: {
       mode: "sequential",
+      speed: { factor: 1.0, pitch_correction: true },
       // Legacy fields are retained for compatibility with older projects.
       layout: "vertical_split",
       split: 0.5,

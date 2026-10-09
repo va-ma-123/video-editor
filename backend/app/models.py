@@ -136,7 +136,7 @@ class CropTransitionOp(BaseModel):
 
 class TransformOp(BaseModel):
     crop: Optional[CropRect] = None  # {x, y, width, height} in source pixel space
-    crop_transition: Optional[CropTransitionOp]
+    crop_transition: Optional[CropTransitionOp] = None
     crop_mode: Literal["crop", "blur"] = "crop"
     rotate: Literal[0, 90, 180, 270] = 0
     flip: Optional[Literal["horizontal", "vertical"]] = None
@@ -174,6 +174,7 @@ class GroupAudioOp(BaseModel):
 
 class GroupVideoOp(BaseModel):
     mode: Literal["sequential", "composite"] = "sequential"
+    speed: SpeedOp = Field(default_factory=SpeedOp)
     layout: Literal["vertical_split", "horizontal_split"] = "vertical_split"
     split: float = 0.5
 

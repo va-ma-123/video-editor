@@ -322,22 +322,28 @@ def _ensure_clip_rendered(project: Project, clip: Clip, quality: str) -> Path:
 
     try:
         resolved_audio = metronome.resolve_clip_audio(project, clip)
+        resolved_speed = metronome.resolve_clip_speed(project, clip)
     except metronome.AudioAssetNotFound as e:
         raise HTTPException(400, str(e))
 
-    cache_key = ffmpeg_utils.clip_cache_key(source, clip, quality=quality, resolved_audio=resolved_audio.fingerprint)
+    render_clip_input = clip.model_copy(deep=True)
+    render_clip_input.operations.audio.mode = resolved_audio.mode
+    render_clip_input.operations.audio.volume = resolved_audio.volume
+    render_clip_input.operations.audio.replacement_start_sec = resolved_audio.replacement_start_sec
+    render_clip_input.operations.speed.factor = resolved_speed.factor
+    render_clip_input.operations.speed.pitch_correction = resolved_speed.pitch_correction
+
+    cache_key = ffmpeg_utils.clip_cache_key(
+        source, 
+        render_clip_input, 
+        quality=quality, 
+        resolved_audio=resolved_audio.fingerprint
+    )
     prefix = "final_" if quality == "final" else ""
     cache_path = storage.CACHE_DIR / f"{prefix}{cache_key}.mp4"
     if not cache_path.exists():
-        # ffmpeg_utils/render_clip only ever see "original" / "muted" /
-        # "replaced" -- "inherit" and "metronome" are fully resolved above,
-        # with a metronome landing here as a synthesized WAV played back
-        # through the exact same "replaced" path a user-uploaded replacement
-        # audio file already uses.
-        render_clip_input = clip.model_copy(deep=True)
-        render_clip_input.operations.audio.mode = resolved_audio.mode
-        render_clip_input.operations.audio.volume = resolved_audio.volume
-        render_clip_input.operations.audio.replacement_start_sec = resolved_audio.replacement_start_sec
+        # ffmpeg_utils/render_clip only ever see concrete audio/speed values
+        # group speed is collapsed into the clip's own settings before render starts
         ffmpeg_utils.render_clip(
             source, render_clip_input, str(cache_path), quality=quality,
             audio_asset_path=resolved_audio.asset_path,

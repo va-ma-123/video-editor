@@ -2,9 +2,8 @@ import { useState } from "react";
 import { api } from "../api";
 import { defaultGroupOperations, defaultMetronome, defaultRamp } from "../edl";
 
-// Group-level counterpart to ClipEditor. Groups only carry an audio block --
-// trim/speed/freeze/transform/fade all stay per-clip -- so this editor is
-// deliberately much smaller than ClipEditor, not a re-skin of it.
+// Group-level counterpart to ClipEditor. Groups carry inherited playback controls plus audio
+// clip-local trim/freeze/transform/fade stay per-clip
 function clampSplit(raw) {
   return Math.max(0.1, Math.min(Number(raw) || 0.5, 0.9));
 }
@@ -54,12 +53,14 @@ export default function GroupEditor({ group, memberClips, directMemberClips, has
   const ops = group.operations || defaultGroupOperations();
   const metronome = ops.audio.metronome || defaultMetronome();
   const video = ops.video || defaultGroupOperations().video;
+  const speed = video.speed || defaultGroupOperations().video.speed;
   const directClips = directMemberClips || [];
   const { eligible: compositeEligible, reason: compositeReason } = compositeEligibility(group, directClips, hasNestedGroups);
 
   const update = (patch) => onChange({ ...group, operations: { ...ops, ...patch } });
   const updateAudio = (patch) => update({ audio: { ...ops.audio, ...patch } });
   const updateVideo = (patch) => update({ video: { ...video, ...patch } });
+  const updateSpeed = (patch) => updateVideo({ speed: { ...speed, ...patch } });
   const updateMetronome = (patch) => updateAudio({ metronome: { ...metronome, ...patch } });
   const updateRamp = (patch) => updateMetronome({ ramp: { ...(metronome.ramp || defaultRamp()), ...patch } });
 
@@ -151,6 +152,26 @@ export default function GroupEditor({ group, memberClips, directMemberClips, has
       
       <section>
         <h4>Playback</h4>
+        <label className="field-label">Speed: {speed.factor.toFixed(2)}x</label>
+        <input 
+          type="number" 
+          min={0}
+          step={0.05}
+          value={speed.factor}
+          onChange={(e) => updateSpeed({ factor: Number.parseFloat(e.target.value) })} 
+        />
+        <label className="row">
+          <input 
+            type="checkbox"
+            checked={speed.pitch_correction}
+            onChange={(e) => updateSpeed({ pitch_correction: e.target.checked })}
+            disabled={speed.factor === 1.0}  
+          />
+          Correct pitch (off = natural pitch shift)
+        </label>
+        <div className="dim">
+          Applies to clips in this group that are still leaving speed on default setting
+        </div>
         <div className="row composite-mode-row">
           <button 
             type="button" 
