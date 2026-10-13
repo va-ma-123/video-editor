@@ -136,43 +136,46 @@ def _crop_transition_filters(
     output_h: int,
     duration: float,
 ) -> list[str]:
-    
-    crop_x, crop_y, crop_width, crop_height = _transition_crop_exprs(start_crop, end_crop, duration)   
+    """Animated window at native size, black everywhere else.
 
-    even_crop_width = (
-        f"max(2,2*floor(({crop_width})/2))"
-    )
-    even_crop_height = (
-        f"max(2,2*floor(({crop_height})/2))"
-    )
+    ffmpeg's crop filter fixes its output size when the graph is built, so
+    width and height can't change over time there. Instead, the mask runs
+    with geq on the bounding box of the start and end windows (which is
+    where the window can ever be), and that box is padded back to the full
+    frame with black. Pixels outside the moving rectangle are painted black.
+    The rectangle's x, y, w and h all animate linearly over `duration`.
+    """
+    sx, sy, sw, sh = start_crop["x"], start_crop["y"], start_crop["width"], start_crop["height"]
+    ex, ey, ew, eh = end_crop["x"], end_crop["y"], end_crop["width"], end_crop["height"]
+
+    # Bounding box of everything the window touches, kept even for yuv420p.
+    bx = max(0, min(sx, ex)) // 2 * 2
+    by = max(0, min(sy, ey)) // 2 * 2
+    right = min(output_w, max(sx + sw, ex + ew))
+    bottom = min(output_h, max(sy + sh, ey + eh))
+    bw = min(output_w - bx, (right - bx + 1) // 2 * 2)
+    bh = min(output_h - by, (bottom - by + 1) // 2 * 2)
+    bw, bh = max(2, bw), max(2, bh)
+
+    def lerp(a: int, b: int) -> str:
+        return f"({a}+({b}-{a})*min(max(T/{duration:.6f},0),1))"
+
+    # Window position and size, relative to the bounding box.
+    w = lerp(sw, ew)
+    h = lerp(sh, eh)
+    x = f"max(0,min({lerp(sx - bx, ex - bx)},(W/SW)-({w})))"
+    y = f"max(0,min({lerp(sy - by, ey - by)},(H/SH)-({h})))"
+
+    # SW/SH are 1 for luma and 0.5 for subsampled chroma, so X/SW and Y/SH
+    # are always luma-space coordinates, whichever plane is being evaluated.
+    inside = f"between(X/SW,{x},{x}+({w}))*between(Y/SH,{y},{y}+({h}))"
 
     return [
-        (
-            "crop="
-            f"w='{even_crop_width}':"
-            f"h='{even_crop_height}':"
-            f"x='min(max(0,{crop_x}),iw-ow)':"
-            f"y='min(max(0,{crop_y}),ih-oh)':"
-            "exact=1"
-        ),
-        (
-            f"scale="
-            f"w='min({output_w}, iw)':"
-            f"h='min({output_h}, ih)':"
-            "force_original_aspect_ratio=decrease:"
-            "force_divisible_by=2:"
-            "eval=frame"
-        ),
-        (
-            f"pad="
-            f"w={output_w}:"
-            f"h={output_h}:"
-            "x='(ow-iw)/2':"
-            "y='(oh-ih)/2':"
-            "color=black:"
-            "eval=frame"
-        ),
-        "setsar=1",
+        f"crop=w={bw}:h={bh}:x={bx}:y={by}:exact=1",
+        f"geq=lum='if({inside},lum(X,Y),16)':"
+        f"cb='if({inside},cb(X,Y),128)':"
+        f"cr='if({inside},cr(X,Y),128)'",
+        f"pad=w={output_w}:h={output_h}:x={bx}:y={by}:color=black",
     ]
 
 
