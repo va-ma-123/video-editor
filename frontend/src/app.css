@@ -384,6 +384,12 @@ input[type="text"], input[type="number"], select {
   border-radius: 6px;
   overflow: hidden;
 }
+.crop-overlay-animated {
+  position: absolute;
+  pointer-events: none;
+  border-radius: 6px;
+  overflow: hidden;
+}
 .crop-mask {
   position: absolute;
   background: rgba(48, 133, 255, 0.28);
@@ -399,6 +405,22 @@ input[type="text"], input[type="number"], select {
   border: 2px solid rgba(255, 255, 255, 0.95);
   box-shadow: 0 0 0 1px rgba(10, 10, 12, 0.4);
   cursor: move;
+}
+.crop-box.animated {
+  cursor: default;
+  opacity: 0.7;
+  box-shadow: 0 0 0 1px rgba(10, 10, 12, 0.4);
+}
+.crop-label {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  padding: 2px 6px;
+  font-size: 13px;
+  font-weight: 600;
+  border-radius: 2px;
+  pointer-events: none;
+  z-index: 10;
 }
 .crop-handle {
   position: absolute;

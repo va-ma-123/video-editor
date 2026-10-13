@@ -97,7 +97,19 @@ function resizePreviewCrop(startCrop, dragMode, dx, dy, previewSize) {
   return clampPreviewCrop({ x: l, y: t, width: r-l, height: b-t }, previewSize);
 }
 
-export default function FramePreview({ source, clip, onMarkRange, onCropChange, visible = true, onClose }) {
+export default function FramePreview({ 
+  source, 
+  clip, 
+  onMarkRange, 
+  onCropChange, 
+  visible = true, 
+  onClose,
+  cropMode: propCropMode = "single",
+  cropTransition = null,
+  crops = null,
+  onCropTransitionChange = null,
+  onCropsChange = null, 
+}) {
   const videoRef = useRef(null);
   const stageRef = useRef(null);
   const dragStateRef = useRef(null);
@@ -112,7 +124,32 @@ export default function FramePreview({ source, clip, onMarkRange, onCropChange, 
   const crop = clampCropToSource(clip?.operations?.transform?.crop, source);
   const cropPreview = sourceCropToPreviewCrop(crop, source, previewLayout);
   const hasCropOverlay = !!cropPreview && !!previewLayout;
-  const cropMode = clip?.operations?.transform?.crop_mode || "crop";
+  const transformCropMode = clip?.operations?.transform?.crop_mode || "crop";
+
+  const shouldShowSingleCrop = propCropMode === "single" && hasCropOverlay;
+  const shouldShowTransitionCrop = propCropMode === "transition" && cropTransition && previewLayout;
+  const shouldShowMultipleCrops = propCropMode === "multi" && crops && crops.length > 0 && previewLayout;
+
+  // for transitions
+  const getInterpolatedTransitionCrop = () => {
+    if (!cropTransition || !clip) return null;
+    const clipDuration = clip.end_frame - clip.start_frame;
+    const clipProgress = Math.max(0, Math.min(currentFrame - clip.start_frame, clipDuration)) / clipDuration;
+
+    const start = cropTransition.start;
+    const end = cropTransition.end;
+
+    return {
+      x: Math.round(start.x + (end.x - start.x) * clipProgress),
+      y: Math.round(start.y + (end.y - start.y) * clipProgress),
+      width: Math.round(start.width + (end.width - start.width) * clipProgress),
+      height: Math.round(start.height + (end.height - start.height) * clipProgress),
+    };
+  };
+
+  const transitionCropPreview = shouldShowTransitionCrop 
+    ? sourceCropToPreviewCrop(getInterpolatedTransitionCrop(), source, previewLayout)
+    : null; 
   
   const syncPreviewSize = useCallback(() => {
     const video = videoRef.current;
@@ -169,13 +206,30 @@ export default function FramePreview({ source, clip, onMarkRange, onCropChange, 
   }, []);
 
   const commitPreviewCrop = useCallback(
-    (previewCrop) => {
-      if (!onCropChange || !source || !previewLayout) return;
+    (previewCrop, metadata = {}) => {
+      if (!source || !previewLayout) return;
       const clampedPreviewCrop = clampPreviewCrop(previewCrop, previewLayout);
       const nextCrop = previewCropToSourceCrop(clampedPreviewCrop, source, previewLayout);
-      if (nextCrop) onCropChange({ ...clip, operations: { ...clip.operations, transform: { ...clip.operations.transform, crop: nextCrop } } });
+      if (!nextCrop) return;
+      
+      // route to appropriate callback based on mode
+      if (propCropMode === "transition" && (metadata.target === "start" || metadata.target === "end")) {
+        if (onCropTransitionChange) {
+          const newTransition = { ...cropTransition };
+          newTransition[metadata.target] = nextCrop;
+          onCropTransitionChange(newTransition);
+        }
+      } else if (propCropMode === "multi" && typeof metadata.index === "number") {
+        if (onCropsChange) {
+          const newCrops = [...crops];
+          newCrops[metadata.index] = nextCrop;
+          onCropsChange(newCrops);
+        }
+      } else if (propCropMode === "single" && onCropChange) {
+        onCropChange({ ...clip, operations: { ...clip.operations, transform: { ...clip.operations.transform, crop: nextCrop } } });
+      }
     },
-    [clip, onCropChange, previewLayout, source]
+    [clip, onCropChange, onCropTransitionChange, onCropsChange, propCropMode, previewLayout, source, cropTransition, crops]
   );
 
   const handlePointerMove = useCallback(
@@ -186,7 +240,7 @@ export default function FramePreview({ source, clip, onMarkRange, onCropChange, 
       const dx = event.clientX - drag.startPoint.x;
       const dy = event.clientY - drag.startPoint.y;
       const nextCrop = clampPreviewCrop(resizePreviewCrop(drag.startCrop, drag.mode, dx, dy, previewLayout), previewLayout);
-      if (nextCrop) commitPreviewCrop(nextCrop);
+      if (nextCrop) commitPreviewCrop(nextCrop, drag.metadata);
     },
     [commitPreviewCrop, previewLayout]
   );
@@ -204,22 +258,40 @@ export default function FramePreview({ source, clip, onMarkRange, onCropChange, 
   );
 
   const startDragging = useCallback(
-    (mode) => (event) => {
-      if(!cropPreview || !previewLayout || !onCropChange) return;
+    (mode, metadata = {}) => (event) => {
+      if(!previewLayout || !onCropChange && !onCropTransitionChange && !onCropsChange) return;
+
+      let startCrop = null;
+      if (propCropMode === "single") {
+        if(!cropPreview) return;
+        startCrop = cropPreview;
+      } else if (propCropMode === "transition" && metadata.target) {
+        const cropToEdit = metadata.target === "start" ? cropTransition?.start : cropTransition?.end;
+        if (!cropToEdit) return;
+        startCrop = sourceCropToPreviewCrop(cropToEdit, source, previewLayout);
+      } else if (propCropMode === "multi" && typeof metadata.index === "number") {
+        const cropToEdit = crops?.[metadata.index];
+        if (!cropToEdit) return;
+        startCrop = sourceCropToPreviewCrop(cropToEdit, source, previewLayout);
+      }
+
+      if (!startCrop) return;
+
       event.preventDefault();
       event.stopPropagation();
       dragStateRef.current = {
         mode,
+        metadata,
         pointerId: event.pointerId,
         startPoint: { x: event.clientX, y: event.clientY },
-        startCrop: cropPreview,
+        startCrop,
       };
       window.addEventListener("pointermove", handlePointerMove);
       window.addEventListener("pointerup", stopDragging);
       window.addEventListener("pointercancel", stopDragging);
       event.currentTarget.setPointerCapture?.(event.pointerId);
     },
-    [cropPreview, handlePointerMove, onCropChange, previewLayout, stopDragging]
+    [propCropMode, cropPreview, cropTransition, crops, source, onCropTransitionChange, onCropsChange, handlePointerMove, onCropChange, previewLayout, stopDragging]
   );
 
   const seekToFrame = useCallback(
@@ -311,17 +383,28 @@ export default function FramePreview({ source, clip, onMarkRange, onCropChange, 
   };
 
   const resetCrop = () => {
-    if (!clip || !onCropChange || !source?.width || !source?.height) return;
-    onCropChange({
-      ...clip,
-      operations: {
-        ...clip.operations,
-        transform: {
-          ...clip.operations.transform,
-          crop: { x:0, y: 0, width: source.width, height: source.height },
+    if (!source?.width || !source?.height) return;
+    const defaultRect = { x:0, y: 0, width: source.width, height: source.height };
+
+    if (propCropMode === "single" && clip && onCropChange) {
+      onCropChange({
+        ...clip,
+        operations: {
+          ...clip.operations,
+          transform: {
+            ...clip.operations.transform,
+            crop: defaultRect,
+          },
         },
-      },
-    });
+      });
+    } else if (propCropMode === "transition" && onCropTransitionChange) {
+      onCropTransitionChange({
+        start: defaultRect,
+        end: defaultRect,
+      });
+    } else if (propCropMode === "multi" && onCropsChange) {
+      onCropsChange([defaultRect]);
+    }
   };
 
   if (!source) {
@@ -338,6 +421,92 @@ export default function FramePreview({ source, clip, onMarkRange, onCropChange, 
 
   if (!visible) return null;
 
+  const cropColors = ["#4a90e2", "#f5a623", "#7ed321", "#e84393", "#9b9b9b"];
+
+  const renderCropOverlay = (cropPreviewRect, label, color, metadata) => {
+    if (!cropPreviewRect || !previewLayout) return null;
+
+    return (
+      <div
+        key={label}
+        className="crop-overlay"
+        aria-hidden="true"
+        style={{
+          left: `${previewLayout.left}px`,
+          top: `${previewLayout.top}px`,
+          width: `${previewLayout.width}px`,
+          height: `${previewLayout.height}px`,
+          pointerEvents: "none",
+        }}
+      >
+        <div className="crop-mask crop-mask-top" style={{ height: `${cropPreviewRect.y}px`, backgroundColor: `${color}40` }} />
+        <div 
+          className="crop-mask crop-mask-left"
+          style={{
+            top: `${cropPreviewRect.y}px`,
+            width: `${cropPreviewRect.x}px`,
+            height: `${cropPreviewRect.height}px`,
+            backgroundColor: `${color}40`,
+          }}
+        />
+        <div 
+          className="crop-mask crop-mask-right"
+          style={{
+            top: `${cropPreviewRect.y}px`,
+            left: `${cropPreviewRect.x + cropPreviewRect.width}px`,
+            height: `${cropPreviewRect.height}px`,
+            backgroundColor: `${color}40`,
+          }}
+        />
+        <div 
+          className="crop-mask crop-mask-bottom"
+          style={{
+            top: `${cropPreviewRect.y + cropPreviewRect.height}px`,
+            backgroundColor: `${color}40`,
+          }}
+        />
+        <div
+          className="crop-box"
+          style={{
+            left: `${cropPreviewRect.x}px`,
+            top: `${cropPreviewRect.y}px`,
+            width: `${cropPreviewRect.width}px`,
+            height: `${cropPreviewRect.height}px`,
+            borderColor: color,
+            pointerEvents: "auto",
+          }}
+          onPointerDown={startDragging("move", metadata)}
+        >
+          <div
+            className="crop-label"
+            style={{ backgroundColor: color, color: "white" }}
+          >
+            {label}
+          </div>
+          {[
+            ["nw", "crop-handle nw"],
+            ["n", "crop-handle n"],
+            ["ne", "crop-handle ne"],
+            ["e", "crop-handle e"],
+            ["se", "crop-handle se"],
+            ["s", "crop-handle s"],
+            ["sw", "crop-handle sw"],
+            ["w", "crop-handle w"],
+          ].map(([mode, className]) => (
+            <button 
+              key={mode}
+              type="button"
+              className={className}
+              style={{ borderColor: color }}
+              onPointerDown={startDragging(mode, metadata)}
+              aria-label={`Resize crop ${mode}`}
+            />
+          ))}
+        </div>
+      </div>
+    );
+  };
+ 
   return (
     <div className="frame-preview">
       <div className="frame-preview-header">
@@ -364,79 +533,98 @@ export default function FramePreview({ source, clip, onMarkRange, onCropChange, 
         >
           <track kind="captions" label="Captions" srcLang="en" src={null} />
         </video>
-        {hasCropOverlay && previewLayout && (
-          <div 
-            className="crop-overlay" 
-            aria-hidden="true"
-            style={{
-              left: `${previewLayout.left}px`,
-              top: `${previewLayout.top}px`,
-              width: `${previewLayout.width}px`,
-              height: `${previewLayout.height}px`,
-            }}
-          >
-            <div className="crop-mask crop-mask-top" style={{ height: `${cropPreview.y}px` }} />
-            <div 
-              className="crop-mask crop-mask-left"
-              style={{ 
-                top: `${cropPreview.y}px`, 
-                width: `${cropPreview.x}px`, 
-                height: `${cropPreview.height}px` 
-              }}
-            />
-            <div 
-              className="crop-mask crop-mask-right"
-              style={{ 
-                top: `${cropPreview.y}px`, 
-                left: `${cropPreview.x + cropPreview.width}px`, 
-                height: `${cropPreview.height}px` 
-              }}
-            />
-            <div 
-              className="crop-mask crop-mask-bottom"
-              style={{ 
-                top: `${cropPreview.y + cropPreview.height}px`
-              }}
-            />
-            <div
-              className="crop-box"
-              style={{
-                left: `${cropPreview.x}px`,
-                top: `${cropPreview.y}px`,
-                width: `${cropPreview.width}px`,
-                height: `${cropPreview.height}px`,
-              }}
-              onPointerDown={startDragging("move")}
-            >
-              {[
-                ["nw", "crop-handle nw"],
-                ["n", "crop-handle n"],
-                ["ne", "crop-handle ne"],
-                ["e", "crop-handle e"],
-                ["se", "crop-handle se"],
-                ["s", "crop-handle s"],
-                ["sw", "crop-handle sw"],
-                ["w", "crop-handle w"],
-              ].map(([mode, className]) => (
-                <button 
-                  key={mode}
-                  type="button"
-                  className={className}
-                  onPointerDown={startDragging(mode)}
-                  aria-label={`Resize crop ${mode}`}
-                />
-              ))}
-            </div>
-          </div>
+        {shouldShowSingleCrop && (
+          renderCropOverlay(cropPreview, "Crop", "#4a90e2", {})
         )}
+        {shouldShowTransitionCrop && (
+          <>
+            {renderCropOverlay(
+              sourceCropToPreviewCrop(cropTransition?.start, source, previewLayout),
+              "Start",
+              "#4a90e2",
+              { target: "start" }
+            )}
+            {renderCropOverlay(
+              sourceCropToPreviewCrop(cropTransition?.end, source, previewLayout),
+              "End",
+              "#f5a623",
+              { target: "end" }
+            )}
+            {transitionCropPreview && (
+              <div 
+                className="crop-overlay-animated" 
+                aria-hidden="true"
+                style={{
+                  left: `${previewLayout.left}px`,
+                  top: `${previewLayout.top}px`,
+                  width: `${previewLayout.width}px`,
+                  height: `${previewLayout.height}px`,
+                }}
+              >
+                <div
+                  className="crop-box animated"
+                  style={{
+                    left: `${transitionCropPreview.x}px`,
+                    top: `${transitionCropPreview.y}px`,
+                    width: `${transitionCropPreview.width}px`,
+                    height: `${transitionCropPreview.height}px`,
+                    borderColor: "#7ed321",
+                    pointerEvents: "none",
+                  }}
+                >
+                  <div
+                    className="crop-label"
+                    style={{ backgroundColor: "#7ed321", color: "white" }}
+                  >
+                    Live
+                  </div>
+                </div>
+              </div>
+            )}
+          </>
+        )}
+        {shouldShowMultipleCrops &&
+          crops.map((cropData, idx) => {
+            const cropPreviewData = sourceCropToPreviewCrop(cropData, source, previewLayout);
+            return renderCropOverlay(
+              cropPreviewData,
+              `Crop ${idx + 1}`,
+              cropColors[idx % cropColors.length],
+              { index: idx }
+            );
+          })
+        }
       </div>
 
       {!ready && <div className="dim">Loading video...</div>}
 
-      { hasCropOverlay && (
+      {shouldShowSingleCrop && (
         <div className="crop-readout-row">
           <div className="crop-readout mono dim">
             Crop keeps {crop.width}x{crop.height} at ({crop.x}, {crop.y}) in source space
+          </div>
+          <button type="button" onClick={resetCrop} className="crop-reset-button">
+            Reset Crop
+          </button>
+        </div>
+      )}
+
+      {shouldShowTransitionCrop && (
+        <div className="crop-readout-row">
+          <div className="crop-readout mono dim">
+            Start: {cropTransition?.start?.width}x{cropTransition?.start?.height} at ({cropTransition?.start?.x}, {cropTransition?.start?.y})
+            End: {cropTransition?.end?.width}x{cropTransition?.end?.height} at ({cropTransition?.end?.x}, {cropTransition?.end?.y})
+          </div>
+          <button type="button" onClick={resetCrop} className="crop-reset-button">
+            Reset Crop
+          </button>
+        </div>
+      )}
+
+      {shouldShowMultipleCrops && (
+        <div className="crop-readout-row">
+          <div className="crop-readout mono dim">
+            {crops.length} crop{crops.length !== 1 ? "s" : ""} defined
           </div>
           <button type="button" onClick={resetCrop} className="crop-reset-button">
             Reset Crop

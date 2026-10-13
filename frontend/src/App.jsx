@@ -262,6 +262,45 @@ export default function App() {
     saveProject({ ...project, clips });
   };
 
+  const handleCropTransitionChange = (newCropTransition) => {
+    if (!previewClip) return;
+    const updatedClip = {
+      ...previewClip,
+      operations: {
+        ...previewClip.operations,
+        transform: {
+          ...previewClip.operations.transform,
+          crop_transition: newCropTransition,
+        },
+      },
+    };
+    handleClipEdit(updatedClip);
+  };
+
+  const handleCropsChange = (newCrops) => {
+    if (!previewClip) return;
+    const updatedClip = {
+      ...previewClip,
+      operations: {
+        ...previewClip.operations,
+        transform: {
+          ...previewClip.operations.transform,
+          crops: newCrops,
+        },
+      },
+    };
+    handleClipEdit(updatedClip);
+  };
+
+  // determine which crop mode to show in framepreview
+  const getCropMode = () => {
+    if(!previewClip) return;
+    const transform = previewClip.operations.transform;
+    if (transform.crops && transform.crops.length > 0) return "multi";
+    if (transform.crop_transition) return "transition";
+    return "single";
+  };
+
   const handleGroupEdit = (updatedGroup) => {
     const prevGroup = project.groups[updatedGroup.id];
     const modeChanged = prevGroup?.operations?.audio?.mode !== updatedGroup.operations?.audio?.mode;
@@ -399,6 +438,11 @@ export default function App() {
               clip={previewClip} 
               onMarkRange={handleMarkRange}
               onCropChange={handleClipEdit}
+              cropMode={getCropMode()}
+              cropTransition={previewClip?.operations?.transform?.crop_transition}
+              crops={previewClip?.operations?.transform?.crops}
+              onCropTransitionChange={handleCropTransitionChange}
+              onCropsChange={handleCropsChange}
               visible={showFramePreview1}
               onClose={() => setShowFramePreview1(false)}
             />
@@ -409,6 +453,11 @@ export default function App() {
               clip={previewClip} 
               onMarkRange={handleMarkRange}
               onCropChange={handleClipEdit}
+              cropMode={getCropMode()}
+              cropTransition={previewClip?.operations?.transform?.crop_transition}
+              crops={previewClip?.operations?.transform?.crops}
+              onCropTransitionChange={handleCropTransitionChange}
+              onCropsChange={handleCropsChange}
               visible={showFramePreview2}
               onClose={() => setShowFramePreview2(false)}
             />

@@ -156,18 +156,32 @@ export default function ClipEditor({ clip, source, onChange }) {
 
   const addCropRegion = () => {
     const newCrop = {
-      x: "0",
-      y: "0",
-      width: String(sourceWidth),
-      height: String(sourceHeight),
-      crop_transition: null,
+      x: 0,
+      y: 0,
+      width: sourceWidth,
+      height: sourceHeight,
     };
-    setCropsDraft([...cropsDraft, newCrop]);
+    const nextCrops = [...(ops.transform.crops || []), newCrop];
+    updateTransform({ crops: nextCrops });
+    setCropsDraft(nextCrops.map(crop => ({
+      x: String(crop.x),
+      y: String(crop.y),
+      width: String(crop.width),
+      height: String(crop.height),
+      crop_transition: crop?.crop_transition || null,
+    })));
   };
 
   const removeCropRegion = (index) => {
-    const nextCrops = cropsDraft.filter((_, i) => i !== index);
-    setCropsDraft(nextCrops);
+    const nextCrops = ops.transform.crops.filter((_, i) => i !== index);
+    updateTransform({ crops: nextCrops });
+    setCropsDraft(nextCrops.map(crop => ({
+      x: String(crop.x),
+      y: String(crop.y),
+      width: String(crop.width),
+      height: String(crop.height),
+      crop_transition: crop?.crop_transition || null,
+    })));
   };
 
   const updateCropRegionField = (index, field, value) => {

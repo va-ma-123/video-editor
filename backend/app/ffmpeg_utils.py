@@ -300,7 +300,7 @@ def probe_duration(path: str) -> float:
     return float(out.strip())
 
 
-def _build_video_filters(clip: Clip, fps: float) -> list[str]:
+def _build_video_filters(clip: Clip) -> list[str]:
     filters = []
     ops = clip.operations
 
@@ -534,7 +534,7 @@ def render_clip(
             }
         )
 
-    video_filters = _build_video_filters(effective_clip, fps)
+    video_filters = _build_video_filters(effective_clip)
 
     if effective_clip.operations.transform.crop_transition:
         transition = effective_clip.operations.transform.crop_transition
