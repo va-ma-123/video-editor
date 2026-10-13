@@ -129,14 +129,16 @@ class CropRect(BaseModel):
     y: int = 0
     width: int = 0
     height: int = 0
+    crop_transition: Optional['CropTransitionOp'] = None
 
 class CropTransitionOp(BaseModel):
     start: CropRect
     end: CropRect
 
 class TransformOp(BaseModel):
-    crop: Optional[CropRect] = None  # {x, y, width, height} in source pixel space
-    crop_transition: Optional[CropTransitionOp] = None
+    crop: Optional[CropRect] = None  # {x, y, width, height} in source pixel space (legacy single crop)
+    crop_transition: Optional[CropTransitionOp] = None # legacy single crop transtition
+    crops: List[CropRect] = [] # New: multiple independent crops (if non empty, it overrides crop and transition)
     crop_mode: Literal["crop", "blur"] = "crop"
     rotate: Literal[0, 90, 180, 270] = 0
     flip: Optional[Literal["horizontal", "vertical"]] = None

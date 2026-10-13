@@ -66,6 +66,8 @@ input[type="text"], input[type="number"], select {
 .mono { font-family: var(--mono); }
 .dim { color: var(--text-dim); }
 .row { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
+.row.nested { margin-left: 1.25rem; }
+.mb-xs { margin-bottom: 0.25rem; }
 
 .error {
   color: var(--danger);
@@ -432,6 +434,55 @@ input[type="text"], input[type="number"], select {
 .frame-readout { font-size: 13px; }
 .scrub-bar { width: 100%; }
 .frame-controls, .mark-controls { display: flex; gap: 6px; flex-wrap: wrap; }
+
+/* Crop regions */
+.crop-region-card {
+  padding: 0.75rem;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+  margin-bottom: 0.5rem;
+}
+.crop-region-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.5rem;
+}
+.crop-region-label {
+  font-size: 0.875rem;
+}
+.crop-region-remove-btn {
+  padding: 0.25rem 0.5 rem;
+  font-size: 0.875rem;
+  background: rgba(200, 80, 80, 0.3);
+  border: 1px solid rgba(200, 80, 80, 0.5);
+  border-radius: 3px;
+  cursor: pointer;
+}
+.crop-region-remove-btn:hover {
+  background: rgba(200, 80, 80, 0.5);
+}
+.crops-list-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+.crops-add-btn {
+  flex: 1;
+  padding: 0.5rem 1rem;
+  background: rgba(100, 150, 200, 0.3);
+  border: 1px solid rgba(100, 150, 200, 0.5);
+  border-radius: 3px;
+  cursor: pointer;
+}
+.crop-add-btn:hover {
+  background: rgba(100, 150, 200, 0.5);
+}
+.crop-region-divider {
+  margin-bottom: 0.75rem;
+  padding-bottom: 0.75rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
 
 /* Clip editor */
 .clip-editor h3 { margin-top: 0; font-size: 14px; }

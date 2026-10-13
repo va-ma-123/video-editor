@@ -153,13 +153,12 @@ def _crop_transition_filters(
             f"h='{even_crop_height}':"
             f"x='min(max(0,{crop_x}),iw-ow)':"
             f"y='min(max(0,{crop_y}),ih-oh)':"
-            "exact=1:"
-            "eval=frame"
+            "exact=1"
         ),
         (
             f"scale="
-            f"w={output_w}:"
-            f"h={output_h}:"
+            f"w='min({output_w}, iw)':"
+            f"h='min({output_h}, ih)':"
             "force_original_aspect_ratio=decrease:"
             "force_divisible_by=2:"
             "eval=frame"
@@ -318,7 +317,9 @@ def _build_video_filters(clip: Clip, fps: float) -> list[str]:
             filters.append(f"tpad=stop_mode=clone:stop_duration={ff.duration_sec}")
 
     t = ops.transform
-    if t.crop_transition:
+    if t.crops and len(t.crops) > 0:
+        filters.append("__MULTIPLE_CROPS_PLACEHOLDER__")
+    elif t.crop_transition:
         if t.crop_mode == "blur":
             filters.append("__BLUR_BACKGROUND_PLACEHOLDER__")
         else:
@@ -473,6 +474,25 @@ def render_clip(
                 )
             }
         )
+    elif quality == "proxy" and clip.operations.transform.crops:
+            scaled_crops = [
+                {
+                    **_scale_crop_for_proxy(_rect_to_dict(c), source),
+                    "crop_transition": c.crop_transition
+                }
+                for c in clip.operations.transform.crops
+            ]
+            effective_clip = clip.model_copy(
+                update={
+                    "operations": clip.operations.model_copy(
+                        update={
+                            "transform": clip.operations.transform.model_copy(
+                                update={"crops": scaled_crops}
+                            )
+                        }
+                    )
+                }
+            )
     elif clip.operations.transform.crop_transition:
         transition = clip.operations.transform.crop_transition
         effective_clip = clip.model_copy(
@@ -486,6 +506,25 @@ def render_clip(
                                     "end": _clamp_crop_rect(_rect_to_dict(transition.end), source),
                                 }
                             }
+                        )
+                    }
+                )
+            }
+        )
+    elif clip.operations.transform.crops:
+        clamped_crops = [
+            {
+                **_clamp_crop_rect(_rect_to_dict(c), source),
+                "crop_transition": c.crop_transition
+            }
+            for c in clip.operations.transform.crops
+        ]
+        effective_clip = clip.model_copy(
+            update={
+                "operations": clip.operations.model_copy(
+                    update={
+                        "transform": clip.operations.transform.model_copy(
+                            update={"crops": clamped_crops}
                         )
                     }
                 )
@@ -552,6 +591,7 @@ def render_clip(
 
 
     blur_background_sentinel = next((f for f in video_filters if f.startswith("__BLUR_BACKGROUND_PLACEHOLDER__")), None)
+    multiple_crop_sentinel = next((f for f in video_filters if f.startswith("__MULTIPLE_CROPS_PLACEHOLDER__")), None)
 
     # Check if the crop transition needs a black background stream (moving
     # crop window case -- pad can't handle animated x/y safely when position
@@ -559,10 +599,56 @@ def render_clip(
     black_canvas_sentinel = next((f for f in video_filters if f.startswith("__NEEDS_BLACK_CANVAS__")), None)
 
     filter_complex_parts = []
-    if blur_background_sentinel:
+    if multiple_crop_sentinel:
+        sentinel_idx = video_filters.index(multiple_crop_sentinel)
+        pre_filters = [f for f in video_filters[:sentinel_idx] if not f.startswith("__")]
+        post_filters = [f for f in video_filters[sentinel_idx + 1:] if not f.startswith("__")]
+
+        crops = effective_clip.operations.transform.crops or []
+        if crops:
+            if pre_filters:
+                pre_chain = ",".join(pre_filters)
+                filter_complex_parts.append(f"[0:v]{pre_chain}[processed]")
+                input_label = "processed"
+            else:
+                input_label = "0:v"
+
+            filter_complex_parts.append(f"color=black:{output_width or 1}x{output_height or 1}:r={fps}[canvas]")
+
+            num_crops = len(crops)
+            if num_crops > 1:
+                split_labels = "".join([f"[in{i}]" for i in range(num_crops)])
+                filter_complex_parts.append(f"[{input_label}]split={num_crops}{split_labels}")
+            else:
+                filter_complex_parts.append(f"[{input_label}]null[in0]")
+
+            for i, crop in enumerate(crops):
+                crop_dict = _rect_to_dict(crop)
+                crop_filter = (
+                    f"crop={crop_dict['width']}:{crop_dict['height']}:"
+                    f"{crop_dict['x']}:{crop_dict['y']}"
+                )
+                filter_complex_parts.append(f"[in{i}]{crop_filter}[crop{i}]")
+
+            current = "canvas"
+            for i, crop in enumerate(crops):
+                crop_dict = _rect_to_dict(crop)
+                x = crop_dict['x']
+                y = crop_dict['y']
+                filter_complex_parts.append(f"[{current}][crop{i}]overlay=x={x}:y={y}:shortest=1[out{i}]")
+                current = f"out{i}"
+
+            if post_filters:
+                post_chain = ",".join(post_filters)
+                filter_complex_parts.append(f"[{current}]{post_chain}[vout]")
+            else:
+                filter_complex_parts.append(f"[{current}]null[vout]")
+        else:
+            filter_complex_parts.append("[0:v]null[vout]")
+    elif blur_background_sentinel:
         transition = effective_clip.operations.transform.crop_transition
         if transition:
-            if isinstance(transaction, dict):
+            if isinstance(transition, dict):
                 start_crop = _rect_to_dict(transition["start"])
                 end_crop = _rect_to_dict(transition["end"])
             else:
@@ -580,8 +666,7 @@ def render_clip(
                 f"h='{crop_height}':"
                 f"x='min(max(0,{crop_x}),iw-ow)':"
                 f"y='min(max(0,{crop_y}),ih-oh)':"
-                "exact=1:"
-                "eval=frame"
+                "exact=1"
             )
             overlay_x = crop_x
             overlay_y = crop_y
