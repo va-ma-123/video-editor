@@ -129,15 +129,11 @@ class CropRect(BaseModel):
     y: int = 0
     width: int = 0
     height: int = 0
-    crop_mode: Literal["crop", "blur"] = "crop"
-    invert: bool = False
     crop_transition: Optional['CropTransitionOp'] = None
 
 class CropTransitionOp(BaseModel):
     start: CropRect
     end: CropRect
-    crop_mode: Literal["crop", "blur"] = "crop"
-    invert: bool = False
 
 class TransformOp(BaseModel):
     crop: Optional[CropRect] = None  # {x, y, width, height} in source pixel space (legacy single crop)
