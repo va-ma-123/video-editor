@@ -10,6 +10,26 @@ export function defaultOperations() {
   };
 }
 
+export function defaultCropRect() {
+  return {
+    x: 0,
+    y: 0,
+    width: 0,
+    height: 0,
+    crop_mode: "crop",
+    invert: false,
+  };
+}
+
+export function defaultCropTransition() {
+  return {
+    start: defaultCropRect(),
+    end: defaultCropRect(),
+    crop_mode: "crop",
+    invert: false,
+  };
+}
+
 export function defaultMetronome({ startClipId = null, endClipId = null,  startFrame = null, endFrame = null } = {}) {
   return {
     tempo_mode: "bpm", // bpm or beat_count

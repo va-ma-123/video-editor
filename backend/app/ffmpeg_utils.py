@@ -129,6 +129,9 @@ def _transition_crop_exprs(
     return crop_x, crop_y, crop_width, crop_height
     
 
+def _inverted_crop_filters(crop: dict[str, int]) -> list[str]:
+    return [f"__INVERTED_CROP_REGIONS__{crop['x']},{crop['y']},{crop['width']},{crop['height']}"]
+
 def _crop_transition_filters(
     start_crop: dict[str, int],
     end_crop: dict[str, int],
@@ -323,15 +326,24 @@ def _build_video_filters(clip: Clip) -> list[str]:
     if t.crops and len(t.crops) > 0:
         filters.append("__MULTIPLE_CROPS_PLACEHOLDER__")
     elif t.crop_transition:
+        crop_mode = getattr(t.crop_transition, 'crop_mode', 'crop') or 'crop'
         if t.crop_mode == "blur":
-            filters.append("__BLUR_BACKGROUND_PLACEHOLDER__")
+            filters.append("__BLUR_TRANSITION_PLACEHOLDER__")
         else:
             filters.append("__CROP_TRANSITION_PLACEHOLDER__")
     elif t.crop:
-        if t.crop_mode == "blur":
-            filters.append("__BLUR_BACKGROUND_PLACEHOLDER__")
+        crop = _rect_to_dict(t.crop)
+        crop_mode = crop.get('crop_mode', 'crop') or 'crop'
+        invert = crop.get('invert', False)
+
+        if crop_mode == "blur":
+            if invert:
+                filters.append("__INVERTED_BLUR_PLACEHOLDER__")
+            else:
+                filters.append("__BLUR_BACKGROUND_PLACEHOLDER__")
+        elif invert:
+            filters.append("__INVERTED_CROP_PLACEHOLDER__")
         else:
-            crop = _rect_to_dict(t.crop)
             filters.append(f"crop={crop['width']}:{crop['height']}:{crop['x']}:{crop['y']}")
     if t.rotate == 90:
         filters.append("transpose=1")
@@ -594,6 +606,8 @@ def render_clip(
 
 
     blur_background_sentinel = next((f for f in video_filters if f.startswith("__BLUR_BACKGROUND_PLACEHOLDER__")), None)
+    inverted_crop_sentinel = next((f for f in video_filters if f.startswith("__INVERTED_CROP_PLACEHOLDER__")), None)
+    inverted_blur_sentinel = next((f for f in video_filters if f.startswith("__INVERTED_BLUR_PLACEHOLDER__")), None)
     multiple_crop_sentinel = next((f for f in video_filters if f.startswith("__MULTIPLE_CROPS_PLACEHOLDER__")), None)
 
     # Check if the crop transition needs a black background stream (moving
@@ -602,7 +616,98 @@ def render_clip(
     black_canvas_sentinel = next((f for f in video_filters if f.startswith("__NEEDS_BLACK_CANVAS__")), None)
 
     filter_complex_parts = []
-    if multiple_crop_sentinel:
+    if inverted_crop_sentinel:
+        crop = _rect_to_dict(effective_clip.operations.transform.crop)
+        sentinel_idx = video_filters.index(inverted_crop_sentinel)
+        pre_filters = [f for f in video_filters[:sentinel_idx] if not f.startswith("__")]
+        post_filters = [f for f in video_filters[sentinel_idx + 1:] if not f.startswith("__")]
+        pre_chain = ",".join(pre_filters) if pre_filters else "null"
+        post_chain = ",".join(post_filters) if post_filters else "null"
+
+        crop_x = crop["x"]
+        crop_y = crop["y"]
+        crop_w = crop["width"]
+        crop_h = crop["height"]
+        canvas_w = output_width or 1
+        canvas_h = output_height or 1
+
+        if pre_filters:
+            filter_complex_parts.append(f"[0:v]{pre_chain}[processed]")
+            src_label = "processed"
+        else:
+            src_label = "0:v"
+
+        filter_complex_parts.append(f"color=black:{canvas_w}x{canvas_h}:r={fps}[canvas]")
+        filter_complex_parts.append(f"[{src_label}]split=4[top][bottom][left][right]")
+        ## top margin
+        if crop_y > 0:
+            filter_complex_parts.append(f"[top]crop={canvas_w}:{crop_y}:0:0[top_crop]")
+        else:
+            filter_complex_parts.append("[top]null[top_crop]")
+
+        ## bottom margin
+        bottom_h = canvas_h - crop_y - crop_h
+        if bottom_h > 0:
+            filter_complex_parts.append(f"[bottom]crop={canvas_w}:{bottom_h}:0:{crop_y + crop_h}[bottom_crop]")
+        else:
+            filter_complex_parts.append("[bottom]null[bottom_crop]")
+
+        ## left margin
+        if bottom_h > 0:
+            filter_complex_parts.append(f"[left]crop={crop_x}:{crop_h}:0:{crop_y}[left_crop]")
+        else:
+            filter_complex_parts.append("[left]null[left_crop]")
+
+        ## right margin
+        right_w = canvas_w - crop_x - crop_w
+        if right_w > 0:
+            filter_complex_parts.append(f"[right]crop={right_w}:{crop_h}:{crop_x + crop_w}:{crop_y}[right_crop]")
+        else:
+            filter_complex_parts.append("[right]null[right_crop]")
+
+        filter_complex_parts.append("[canvas][top_crop]overlay=x=0:y=0:shortest=1[c1]")
+        filter_complex_parts.append(f"[c1][bottom_crop]overlay=x=0:y={crop_y + crop_h}:shortest=1[c2]")
+        filter_complex_parts.append(f"[c2][left_crop]overlay=x=0:y={crop_y}:shortest=1[c3]")
+        filter_complex_parts.append(f"[c3][right_crop]overlay=x={crop_x + crop_w}:y={crop_y}:shortest=1[mid]")
+
+        if post_filters:
+            filter_complex_parts.append(f"[mid]{post_chain}[vout]")
+        else:
+            filter_complex_parts.append("[mid]null[vout]")
+    elif inverted_blur_sentinel:
+        crop = _rect_to_dict(effective_clip.operations.transform.crop)
+        sentinel_idx = video_filters.index(inverted_blur_sentinel)
+        pre_filters = [f for f in video_filters[:sentinel_idx] if not f.startswith("__")]
+        post_filters = [f for f in video_filters[sentinel_idx + 1:] if not f.startswith("__")]
+        pre_chain = ",".join(pre_filters) if pre_filters else "null"
+        post_chain = ",".join(post_filters) if post_filters else "null"        
+    
+        crop_x = crop["x"]
+        crop_y = crop["y"]
+        crop_w = crop["width"]
+        crop_h = crop["height"]
+
+        if pre_filters:
+            filter_complex_parts.append(f"[0:v]{pre_chain}[processed]")
+            src_label = "processed"
+        else:
+            src_label = "0:v"
+
+        filter_complex_parts.append(f"[{src_label}]split=2[bg][fg]")
+
+        crop_filter = f"crop={crop_w}:{crop_h}:{crop_x}:{crop_y}"
+        filter_complex_parts.append(f"[fg]{crop_filter},boxblur=luma_radius=20:luma_power=1:chroma_radius=10:chroma_power=1[blurred]")
+
+        filter_complex_parts.append("[bg]null[background]")
+        filter_complex_parts.append(f"[background][blurred]overlay=x={crop_x}:y={crop_y}:shortest=1[mid]")
+
+        if post_filters:
+            filter_complex_parts.append(f"[mid]{post_chain}[vout]")
+        else:
+            filter_complex_parts.append("[mid]null[vout]")
+
+
+    elif multiple_crop_sentinel:
         sentinel_idx = video_filters.index(multiple_crop_sentinel)
         pre_filters = [f for f in video_filters[:sentinel_idx] if not f.startswith("__")]
         post_filters = [f for f in video_filters[sentinel_idx + 1:] if not f.startswith("__")]

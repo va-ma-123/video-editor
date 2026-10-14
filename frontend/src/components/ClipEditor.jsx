@@ -7,16 +7,24 @@ export default function ClipEditor({ clip, source, onChange }) {
   const [soundUploadStatus, setSoundUploadStatus] = useState("");
   const [startDraft, setStartDraft] = useState("");
   const [endDraft, setEndDraft] = useState("");
-  const [cropDraft, setCropDraft] = useState({ x: "", y: "", width: "", height: "" });
+  const [cropDraft, setCropDraft] = useState({ x: "", y: "", width: "", height: "", crop_mode: "crop", invert: false });
   const [cropTransitionDraft, setCropTransitionDraft] = useState({
-    start: { x: "", y: "", width: "", height: "" },
-    end: { x: "", y: "", width: "", height: "" },
+    start: { x: "", y: "", width: "", height: "", crop_mode: "crop", invert: false },
+    end: { x: "", y: "", width: "", height: "", crop_mode: "crop", invert: false },
+    crop_mode: "crop", 
+    invert: false,
   });
   const [cropsDraft, setCropsDraft] = useState([]);
 
   const sourceWidth = Math.max(source?.width || 640, 1);
   const sourceHeight = Math.max(source?.height || 360, 1);
-  const defaultCropRect = () => ({ x: 0, y: 0, width: sourceWidth, height: sourceHeight });
+  const defaultCropRect = () => ({ x: 0, y: 0, width: sourceWidth, height: sourceHeight, crop_mode: "crop", invert: false, });
+  const defaultCropTransition = () => ({
+    start: defaultCropRect,
+    end: defaultCropRect,
+    crop_mode: "crop",
+    invert: false,
+  })
 
   useEffect(() => {
     if(clip) {
@@ -30,6 +38,8 @@ export default function ClipEditor({ clip, source, onChange }) {
         y: String(crop?.y ?? 0),
         width: String(crop?.width ?? sourceWidth),
         height: String(crop?.height ?? sourceHeight),
+        crop_mode: crop?.crop_mode ?? "crop",
+        invert: crop?.invert ?? false,
       });
       setCropTransitionDraft({
         start: {
@@ -44,13 +54,16 @@ export default function ClipEditor({ clip, source, onChange }) {
           width: String(cropTransition?.end?.width ?? sourceWidth),
           height: String(cropTransition?.end?.height ?? sourceHeight),
         },
+        crop_mode: cropTransition?.crop_mode ?? "crop",
+        invert: cropTransition?.invert ?? false,
       });
       setCropsDraft(crops.map(crop => ({
         x: String(crop?.x ?? 0),
         y: String(crop?.y ?? 0),
         width: String(crop?.width ?? sourceWidth),
         height: String(crop?.height ?? sourceHeight),
-        crop_transition: crop?.crop_transition || null,
+        crop_mode: crop?.crop_mode ?? "crop",
+        invert: crop?.invert ?? false,
       })));
     }
   }, [clip?.id, sourceWidth, sourceHeight]);
@@ -110,6 +123,8 @@ export default function ClipEditor({ clip, source, onChange }) {
     y: String(crop?.y ?? 0),
     width: String(crop?.width ?? sourceWidth),
     height: String(crop?.height ?? sourceHeight),
+    crop_mode: crop?.crop_mode ?? "crop",
+    invert: crop?.invert ?? false,
   });
 
   const clampCropTransition = (transition) => ({
@@ -120,10 +135,14 @@ export default function ClipEditor({ clip, source, onChange }) {
   const cropTransitionToDraft = (transition) => ({
     start: cropToDraft(transition?.start),
     end: cropToDraft(transition?.end),
+    crop_mode: transition?.crop_mode ?? "crop",
+    invert: transition?.invert ?? false,
   });
 
   const applyCropDraft = () => {
     const nextCrop = clampCrop(cropDraft);
+    nextCrop.crop_mode = cropDraft.crop_mode;
+    nextCrop.invert = cropDraft.invert;
     updateTransform({ crop: nextCrop });
     setCropDraft(cropToDraft(nextCrop));
   }
@@ -140,18 +159,30 @@ export default function ClipEditor({ clip, source, onChange }) {
 
   const applyCropTransitionDraft = () => {
     const nextTransition = clampCropTransition(cropTransitionDraft);
+    nextTransition.crop_mode = cropTransitionDraft.crop_mode;
+    nextTransition.invert = cropTransitionDraft.invert;
     updateTransform({ crop_transition: nextTransition });
     setCropTransitionDraft(cropTransitionToDraft(nextTransition));
   };
 
   const toggleCropTransition = (enabled) => {
-    const nextTransition = enabled ? { start: defaultCropRect(), end: defaultCropRect() } : null;
-    updateTransform({ 
-      crop_transition: nextTransition,
-      crop: enabled ? null : ops.transform.crop,
-      crops: enabled ? [] : ops.transform.crops 
-    });
-    setCropTransitionDraft(cropTransitionToDraft(nextTransition || { start: defaultCropRect(), end: defaultCropRect() }));
+    if(enabled) {
+      const newTransition = defaultCropTransition;
+      updateTransform({ 
+        crop_transition: newTransition,
+        crop: enabled ? null : ops.transform.crop,
+        crops: enabled ? [] : ops.transform.crops 
+      });
+      setCropTransitionDraft(newTransition);
+    } else {
+      updateTransform({ crop_transition: null });
+      setCropTransitionDraft({
+        start: { x: "", y: "", width: "", height: "", crop_mode: "crop", invert: false },
+        end: { x: "", y: "", width: "", height: "", crop_mode: "crop", invert: false },
+        crop_mode: "crop", 
+        invert: false,
+      })
+    }
   };
 
   const addCropRegion = () => {
@@ -191,21 +222,29 @@ export default function ClipEditor({ clip, source, onChange }) {
   };
 
   const applyMultipleCrops = () => {
-    const clampedCrops = cropsDraft.map(crop => clampCrop(crop));
+    const clampedCrops = cropsDraft.map(crop => ({
+      x: clampCrop(crop).x,
+      y: clampCrop(crop).y,
+      width: clampCrop(crop).width,
+      height: clampCrop(crop).height,
+      crop_mode: crop.crop_mode ?? "crop",
+      invert: crop.invert ?? false,
+    }));
     updateTransform({ crops: clampedCrops });
     setCropsDraft(clampedCrops.map(crop => ({
       x: String(crop.x),
       y: String(crop.y),
       width: String(crop.width),
       height: String(crop.height),
-      crop_transition: null,
+      crop_mode: crop.crop_mode,
+      invert: crop.invert,
     })));
   };
 
   const toggleMultipleCrops = (enabled) => {
     if (enabled) {
-      setCropsDraft([{ x: "0", y: "0", width: String(sourceWidth), height: String(sourceHeight), crop_transition: null }]);
-      updateTransform({ crops: [{ x: "0", y: "0", width: String(sourceWidth), height: String(sourceHeight) }], crop: null, crop_transition: null });
+      setCropsDraft([defaultCropRect]);
+      updateTransform({ crops: [defaultCropRect], crop: null, crop_transition: null });
     } else {
       setCropsDraft([]);
       updateTransform({ crops: [] });
@@ -611,24 +650,33 @@ export default function ClipEditor({ clip, source, onChange }) {
         <h4>Crop Options</h4>
         <div className="dim mb-xs">Select one: Single Crop, Transitioning Crop, or Multiple Crops</div>
 
-        <label className="field-label">
-          Crop Mode (applies to all crop types):
-          <select 
-            value={ops.transform.crop_mode || "crop"}
-            onChange={(e) => updateTransform({ crop_mode: e.target.value })}
-          >
-            <option value="crop">Crop out the rest</option>
-            <option value="blur">Blur the rest</option>
-          </select>
-        </label>
-
         <label className="row">
           <input type="checkbox" checked={!!ops.transform.crop} onChange={(e) => toggleCrop(e.target.checked)} />
           Single Crop
         </label>
         {ops.transform.crop && (
           <div className="crop-region-card">
-            <div className=" crop-fields">
+            <div className="crop-fields">
+              <label className="field-label">
+                Mode:
+                <select 
+                  value={cropDraft.crop_mode || "crop"}
+                  onChange={(e) => setCropDraft({ ...cropDraft, crop_mode: e.target.value })}  
+                >
+                  <option value="crop">Crop</option>
+                  <option value="blur">Blur</option>
+                </select>
+              </label>
+              <label className="row">
+                <input 
+                  type="checkbox" 
+                  checked={cropDraft.invert ?? false}
+                  onChange={(e) => setCropDraft({ ...cropDraft, invert: e.target.checked })} 
+                />
+                Invert ({cropDraft.crop_mode === "crop" ? "crop this out" : "blur this region"})
+              </label>
+            </div>
+            <div className="crop-fields">
               {["x", "y", "width", "height"].map((k) => (
                 <label key={k} className="field-label small">
                   {k}
@@ -665,6 +713,26 @@ export default function ClipEditor({ clip, source, onChange }) {
         </label>
         {ops.transform.crop_transition && (
           <div className="crop-region-card">
+            <div className="crop-fields">
+              <label className="field-label">
+                Mode:
+                <select 
+                  value={cropTransitionDraft.crop_mode || "crop"}
+                  onChange={(e) => setCropTransitionDraft({ ...cropTransitionDraft, crop_mode: e.target.value })}  
+                >
+                  <option value="crop">Crop</option>
+                  <option value="blur">Blur</option>
+                </select>
+              </label>
+              <label className="row">
+                <input 
+                  type="checkbox" 
+                  checked={cropTransitionDraft.invert ?? false}
+                  onChange={(e) => setCropTransitionDraft({ ...cropTransitionDraft, invert: e.target.checked })} 
+                />
+                Invert ({cropTransitionDraft.crop_mode === "crop" ? "crop this out" : "blur this region"})
+              </label>
+            </div>
             {[["start", "Start"], ["end", "End"]].map(([section, label]) => (
               <div key={section}>
                 <div className="dim mb-xs">{label}</div>
@@ -726,6 +794,26 @@ export default function ClipEditor({ clip, source, onChange }) {
                   >
                     Remove
                   </button>
+                </div>
+                <div className="crop-fields">
+                  <label className="field-label">
+                    Mode:
+                    <select 
+                      value={crop.crop_mode || "crop"}
+                      onChange={(e) => updateCropRegionField(idx, "crop_mode", e.target.value)}  
+                    >
+                      <option value="crop">Crop</option>
+                      <option value="blur">Blur</option>
+                    </select>
+                  </label>
+                  <label className="row">
+                    <input 
+                      type="checkbox" 
+                      checked={crop.invert ?? false}
+                      onChange={(e) => updateCropRegionField(idx, "invert", e.target.checked)} 
+                    />
+                    Invert ({crop.crop_mode === "crop" ? "crop this out" : "blur this region"})
+                  </label>
                 </div>
                 <div className="crop-fields">
                   {["x", "y", "width", "height"].map((k) => (
